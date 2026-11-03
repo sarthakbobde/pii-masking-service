@@ -159,6 +159,7 @@ def test_xlsx(client, make_key):
     r = _post(client, make_key(["mask"]), "mask", "staff.xlsx", make_xlsx())
     ws = openpyxl.load_workbook(io.BytesIO(r.content)).active
     rows = [[c.value for c in row] for row in ws.iter_rows()]
+    assert rows[0] == ["Name", "Email", "DOB", "Score"]                             # headers stay readable
     assert rows[1][:4] == ["Asha", "<EMAIL_ADDRESS>", "<SENSITIVE_VALUE>", 42]      # DOB is a keyword column
     assert rows[2][2] == "<SENSITIVE_VALUE>"
     assert rows[4][:2] == ["Salary:", "<SENSITIVE_VALUE>"]                          # keyword label beside its value
@@ -219,3 +220,12 @@ def test_upload_limit(client, make_key, monkeypatch):
     from app.config import config
     monkeypatch.setattr(config, "max_upload_mb", 0)
     assert _post(client, make_key(["mask"]), "mask", "x.txt", b"hello").status_code == 413
+
+
+def test_table_keywords_headers_and_key_value_rows():
+    from app.files.sheet import sensitive_cells
+    kw = ["Salary", "DOB", "PAN", "Aadhaar No"]
+    staff = [["Name", "DOB", "Salary", "Team"], ["Asha", "03/05/1991", 1850000, "Data"]]
+    assert sensitive_cells(staff, kw) == {(1, 1), (1, 2)}                 # the "Team" header is left alone
+    key_value = [["PAN", "BQKPS4821L"], ["Aadhaar No", "4521 7896 3214"], ["Team", "Data"]]
+    assert sensitive_cells(key_value, kw) == {(0, 1), (1, 1)}             # labels in the first column stay readable

@@ -148,10 +148,12 @@ def keyword_spans(text: str, keywords) -> list[tuple[int, int]]:
 
 def is_keyword_label(text: str, keywords) -> bool:
     """True when a whole cell is just a keyword ("Salary", "DOB:", "Account no."), so the next cell holds its value."""
-    t = re.sub(r"[\s:=|#.\-–—]+$", "", (text or "").strip()).strip()
-    t = re.sub(r"\s+(?:no|number)$", "", t, flags=re.I)
-    t = " ".join(t.split()).casefold()
-    return bool(t) and t in {" ".join(k.split()).casefold() for k in keywords}
+    def norm(s: str) -> str:
+        s = re.sub(r"[\s:=|#.\-–—]+$", "", (s or "").strip()).strip()
+        s = re.sub(r"\s+(?:no|number)$", "", s, flags=re.I)        # "Account no" and "Account" are the same label
+        return " ".join(s.split()).casefold()
+    t = norm(text)
+    return bool(t) and t in {norm(k) for k in keywords}
 
 
 # ---- detection ------------------------------------------------------------------------------------------------------

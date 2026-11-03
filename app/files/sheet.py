@@ -23,16 +23,27 @@ def sensitive_cells(grid: list[list], keywords) -> set[tuple[int, int]]:
     if not keywords:
         return set()
     out = set()
+
+    def label(v) -> bool:
+        return isinstance(v, str) and is_keyword_label(v, keywords)
+
     header = next((i for i, row in enumerate(grid) if any(v not in (None, "") for v in row)), None)
+    header_cols = set()
     if header is not None:
-        cols = [c for c, v in enumerate(grid[header]) if isinstance(v, str) and is_keyword_label(v, keywords)]
+        for c, v in enumerate(grid[header]):
+            below = [grid[r][c] for r in range(header + 1, len(grid)) if c < len(grid[r])]
+            # a column header only when the cells below are values, not more labels (a key-value table)
+            if label(v) and not any(label(x) for x in below):
+                header_cols.add(c)
         for r in range(header + 1, len(grid)):
-            for c in cols:
+            for c in header_cols:
                 if c < len(grid[r]) and grid[r][c] not in (None, ""):
                     out.add((r, c))
     for r, row in enumerate(grid):
         for c, v in enumerate(row):
-            if isinstance(v, str) and is_keyword_label(v, keywords):
+            if r == header and c in header_cols:
+                continue                                  # a column header is not a label for the cell beside it
+            if label(v):
                 for c2 in range(c + 1, min(len(row), c + 1 + LOOK_RIGHT)):
                     nxt = row[c2]
                     if nxt in (None, ""):
