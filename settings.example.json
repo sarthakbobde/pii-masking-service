@@ -1,0 +1,14 @@
+{
+  "enabled_types": ["EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "IN_AADHAAR", "IN_PAN", "IBAN_CODE"],
+  "threshold": 40,
+  "mask_names": false,
+  "keywords_enabled": true,
+  "sensitive_keywords": ["Salary", "CTC", "DOB", "Date of birth", "Bank account", "IFSC", "Home address"],
+  "allow_list": ["hr@example.com"],
+  "allow_overrides": true,
+  "ocr_enabled": true,
+  "ocr_language": "eng",
+  "custom_types": [
+    {"name": "EMPLOYEE_ID", "pattern": "\\bEMP-\\d{5}\\b", "context": ["employee", "badge"], "confidence": 85}
+  ]
+}

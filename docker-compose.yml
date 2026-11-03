@@ -1,0 +1,12 @@
+services:
+  pii:
+    build: .
+    image: pii-masking-service:latest
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - pii-data:/data
+    restart: unless-stopped
+volumes:
+  pii-data:
