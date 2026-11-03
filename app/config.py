@@ -1,9 +1,13 @@
 """Environment configuration (prefix PII_). Masking behaviour itself lives in the settings the admin API manages."""
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class Config(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="PII_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="PII_", env_file=(".env", ROOT / ".env"), extra="ignore")
 
     database_url: str = "sqlite:///./data/pii.db"
     master_key: str = ""                 # Fernet key(s), comma-separated, newest first; encrypts the vault

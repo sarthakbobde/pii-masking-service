@@ -7,17 +7,24 @@ removed from the following runs, so formatting stays except inside a value that 
 Covered: Word body, tables, text boxes, headers, footers, footnotes, endnotes and comments; PowerPoint slides (shapes,
 tables, groups), speaker notes. Not covered: text inside charts, SmartArt diagrams, embedded objects and images.
 Document properties (author, last modified by, title, subject, keywords, comments) are cleared.
+
+Tables follow the spreadsheet rules: a cell that is just a keyword ("Home address") makes the next cell in its row
+sensitive, and a keyword in the first row makes the cells below it sensitive. Such a cell is replaced whole.
 """
 import io
 
-from app.redact import Redactor
+from app.detect import KEYWORD_SCORE
+from app.files.sheet import sensitive_cells
+from app.policy import KEYWORD_TYPE
+from app.redact import Change, Redactor
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 
-WORD = {"p": W + "p", "t": W + "t", "seps": {W + "tab": "\t", W + "br": "\n", W + "cr": "\n"}, "skip": {W + "delText"}}
-SLIDE = {"p": A + "p", "t": A + "t", "seps": {A + "br": "\n"}, "skip": set()}
+WORD = {"p": W + "p", "t": W + "t", "seps": {W + "tab": "\t", W + "br": "\n", W + "cr": "\n"},
+        "tbl": W + "tbl", "tr": W + "tr", "tc": W + "tc"}
+SLIDE = {"p": A + "p", "t": A + "t", "seps": {A + "br": "\n"}, "tbl": A + "tbl", "tr": A + "tr", "tc": A + "tc"}
 
 
 def _segments(p, spec) -> list:
@@ -39,10 +46,32 @@ def _segments(p, spec) -> list:
     return out
 
 
-def redact_paragraph(p, spec, r: Redactor) -> int:
+def _text(p, spec) -> str:
+    return "".join(t for _, t in _segments(p, spec))
+
+
+def _whole_cells(root, spec, keywords) -> set:
+    """Paragraphs of table cells that are sensitive because of a keyword beside or above them."""
+    out = set()
+    if not keywords:
+        return out
+    for tbl in root.iter(spec["tbl"]):
+        rows = [[tc for tc in tr if tc.tag == spec["tc"]] for tr in tbl if tr.tag == spec["tr"]]
+        grid = [["\n".join(_text(p, spec) for p in tc.iter(spec["p"])) for tc in row] for row in rows]
+        for ri, ci in sensitive_cells(grid, keywords):
+            out.update(rows[ri][ci].iter(spec["p"]))
+    return out
+
+
+def redact_paragraph(p, spec, r: Redactor, whole: bool = False) -> int:
     segs = _segments(p, spec)
     text = "".join(t for _, t in segs)
-    changes = r.find(text)
+    if whole:
+        value = text.strip()
+        start = text.find(value)
+        changes = [Change(start, start + len(value), KEYWORD_TYPE, KEYWORD_SCORE, r.whole(value))] if value else []
+    else:
+        changes = r.find(text)
     if not changes:
         return 0
     starts, pos = [], 0
@@ -103,8 +132,9 @@ def docx(data: bytes, r: Redactor) -> bytes:
         if id(root) in seen:
             continue
         seen.add(id(root))
+        whole = _whole_cells(root, WORD, r.keywords)
         for p in _paragraphs(root, WORD):
-            redact_paragraph(p, WORD, r)
+            redact_paragraph(p, WORD, r, p in whole)
     if r.mode != "unmask":
         _clear_properties(doc.core_properties)
     out = io.BytesIO()
@@ -116,8 +146,9 @@ def pptx(data: bytes, r: Redactor) -> bytes:
     import pptx as python_pptx
     prs = python_pptx.Presentation(io.BytesIO(data))
     for slide in prs.slides:
+        whole = _whole_cells(slide._element, SLIDE, r.keywords)
         for p in _paragraphs(slide._element, SLIDE):
-            redact_paragraph(p, SLIDE, r)
+            redact_paragraph(p, SLIDE, r, p in whole)
         if slide.has_notes_slide:
             for p in _paragraphs(slide.notes_slide._element, SLIDE):
                 redact_paragraph(p, SLIDE, r)

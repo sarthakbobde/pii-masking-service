@@ -18,7 +18,7 @@ from app.redact import Redactor
 LOOK_RIGHT = 3          # how far a keyword label looks for its value
 
 
-def _sensitive_cells(grid: list[list], keywords) -> set[tuple[int, int]]:
+def sensitive_cells(grid: list[list], keywords) -> set[tuple[int, int]]:
     """(row, col) of cells that are sensitive because of a keyword header or a keyword label beside them."""
     if not keywords:
         return set()
@@ -58,7 +58,7 @@ def xlsx(data: bytes, r: Redactor) -> bytes:
     for ws in wb.worksheets:
         rows = list(ws.iter_rows())
         grid = [[c.value for c in row] for row in rows]
-        whole = _sensitive_cells(grid, r.keywords)
+        whole = sensitive_cells(grid, r.keywords)
         for ri, row in enumerate(rows):
             for ci, cell in enumerate(row):
                 v = cell.value
@@ -94,7 +94,7 @@ def csv_bytes(data: bytes, r: Redactor, decode, encode) -> bytes:
     except csv.Error:
         dialect = csv.excel
     grid = [list(row) for row in csv.reader(io.StringIO(text, newline=""), dialect)]
-    whole = _sensitive_cells(grid, r.keywords)
+    whole = sensitive_cells(grid, r.keywords)
     for ri, row in enumerate(grid):
         for ci, v in enumerate(row):
             if (ri, ci) in whole:

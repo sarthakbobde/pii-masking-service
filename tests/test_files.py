@@ -26,8 +26,9 @@ def make_docx() -> bytes:
     p.add_run("john.doe").bold = True                      # the value is split over two runs with different formatting
     p.add_run(f"@acme.com or {PHONE} today.")
     d.add_paragraph("Salary: 12,40,000.")
-    t = d.add_table(rows=1, cols=2)
+    t = d.add_table(rows=2, cols=2)
     t.cell(0, 0).text, t.cell(0, 1).text = "Email", "jane@corp.org"
+    t.cell(1, 0).text, t.cell(1, 1).text = "Home address", "12 MG Road, Pune"      # keyword in one cell, value in the next
     d.sections[0].header.paragraphs[0].text = "Owner mary@corp.org"
     d.core_properties.author = "John Doe"
     out = io.BytesIO()
@@ -129,6 +130,7 @@ def test_docx_mask_keeps_formatting_and_clears_author(client, make_key):
     text = docx_text(r.content)
     assert EMAIL not in text and "john.doe" not in text and "jane@corp.org" not in text and "mary@corp.org" not in text
     assert "Contact <EMAIL_ADDRESS> or <PHONE_NUMBER> today." in text and "Salary: <SENSITIVE_VALUE>." in text
+    assert "MG Road" not in text and "Home address\n<SENSITIVE_VALUE>" in text
     import docx
     d = docx.Document(io.BytesIO(r.content))
     assert d.paragraphs[0].runs[1].bold and d.core_properties.author == ""
