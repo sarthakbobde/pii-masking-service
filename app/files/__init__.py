@@ -61,6 +61,35 @@ def _check(kind: str, data: bytes) -> None:
         raise UnsupportedFile("The file is not text.")
 
 
+def preview_text(kind: str, data: bytes, limit: int = 8000) -> tuple[str, bool]:
+    """The readable text of a (masked) file, cut at `limit` characters, for the admin page's document check."""
+    try:
+        if kind in ("txt", "md", "csv"):
+            text = decode(data)[0]
+        elif kind == "pdf":
+            import pymupdf
+            with pymupdf.open(stream=data, filetype="pdf") as doc:
+                text = "\n\n".join(page.get_text() for page in doc)
+        elif kind == "docx":
+            import docx
+            d = docx.Document(io.BytesIO(data))
+            cells = [c.text for t in d.tables for row in t.rows for c in row.cells]
+            text = "\n".join([p.text for p in d.paragraphs] + cells)
+        elif kind == "pptx":
+            import pptx
+            prs = pptx.Presentation(io.BytesIO(data))
+            text = "\n".join(sh.text_frame.text for s in prs.slides for sh in s.shapes if sh.has_text_frame)
+        else:
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
+            text = "\n".join(" | ".join("" if c is None else str(c) for c in row)
+                             for ws in wb.worksheets for row in ws.iter_rows(values_only=True))
+    except Exception:
+        return "", False
+    text = "\n".join(line for line in (ln.rstrip() for ln in text.splitlines()) if line)
+    return text[:limit], len(text) > limit
+
+
 def process(filename: str, data: bytes, r: Redactor) -> tuple[bytes, str, dict]:
     """(new file bytes, media type, extra details such as the PDF's OCR pages)."""
     from app.files import ooxml, pdf, sheet

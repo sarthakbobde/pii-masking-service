@@ -137,7 +137,7 @@ def docx(data: bytes, r: Redactor) -> bytes:
         whole = _whole_cells(root, WORD, r.label_groups)
         for p in _paragraphs(root, WORD):
             redact_paragraph(p, WORD, r, whole.get(p))
-    if r.mode != "unmask":
+    if r.scrub:
         _clear_properties(doc.core_properties)
     out = io.BytesIO()
     doc.save(out)
@@ -154,7 +154,7 @@ def pptx(data: bytes, r: Redactor) -> bytes:
         if slide.has_notes_slide:
             for p in _paragraphs(slide.notes_slide._element, SLIDE):
                 redact_paragraph(p, SLIDE, r)
-    if r.mode != "unmask":
+    if r.scrub:
         _clear_properties(prs.core_properties)
     out = io.BytesIO()
     prs.save(out)

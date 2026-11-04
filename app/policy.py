@@ -62,7 +62,7 @@ _cache: tuple[float, int, dict, list, list] | None = None     # (when, id(db), s
 def defaults() -> dict:
     return {"enabled_types": list(DEFAULT_TYPES), "threshold": 40, "mask_names": False, "keywords_enabled": True,
             "sensitive_keywords": list(DEFAULT_KEYWORDS), "allow_list": [], "allow_overrides": True,
-            "ocr_enabled": True, "ocr_language": "eng"}
+            "ocr_enabled": True, "ocr_language": "eng", "protection_enabled": True, "scrub_metadata": True}
 
 
 # ---- validation -----------------------------------------------------------------------------------------------------
@@ -101,7 +101,7 @@ def validate(values: dict, custom_names) -> dict:
             clean[k] = check_types(v, custom_names)
         elif k == "threshold":
             clean[k] = check_threshold(v)
-        elif k in ("mask_names", "keywords_enabled", "allow_overrides", "ocr_enabled"):
+        elif k in ("mask_names", "keywords_enabled", "allow_overrides", "ocr_enabled", "protection_enabled", "scrub_metadata"):
             if not isinstance(v, bool):
                 raise ValueError(f"{k} must be true or false.")
             clean[k] = v
@@ -254,6 +254,11 @@ def _load(db: Database) -> tuple[dict, list, list]:
 
 def current(db: Database | None = None) -> dict:
     return dict(_load(db or get_db())[0])
+
+
+def protection_on(db: Database | None = None) -> bool:
+    """The master switch: when off, mask and tokenise pass text and files through unchanged (unmask still works)."""
+    return bool(_load(db or get_db())[0]["protection_enabled"])
 
 
 def custom_types(db: Database | None = None) -> list[dict]:
@@ -417,6 +422,7 @@ class Policy:
     ocr_enabled: bool
     ocr_language: str
     fields: tuple = ()
+    scrub_metadata: bool = True
 
     @property
     def label_groups(self) -> tuple:
@@ -468,4 +474,4 @@ def resolve(overrides: dict | None, db: Database | None = None) -> Policy:
         keywords = s["sensitive_keywords"] if s["keywords_enabled"] else []
     allow = _strings("allow_list", o["allow_list"]) if "allow_list" in o else s["allow_list"]
     return Policy(tuple(types), threshold / 100, names, tuple(keywords), tuple(allow), s["ocr_enabled"], s["ocr_language"],
-                  _request_fields(o.get("fields"), stored_fields))
+                  _request_fields(o.get("fields"), stored_fields), s["scrub_metadata"])

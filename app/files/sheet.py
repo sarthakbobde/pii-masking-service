@@ -92,7 +92,7 @@ def xlsx(data: bytes, r: Redactor) -> bytes:
                     new, changes = r.run(cell.comment.text)
                     if changes:
                         cell.comment = Comment(new, "" if r.mode != "unmask" else cell.comment.author)
-    if r.mode != "unmask":
+    if r.scrub:
         wb.properties.creator = ""
         wb.properties.lastModifiedBy = ""
         wb.properties.title = wb.properties.subject = wb.properties.keywords = wb.properties.description = None

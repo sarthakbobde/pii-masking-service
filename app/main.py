@@ -8,6 +8,7 @@ GET /healthz needs no key.
 Every call is checked against the caller's key (permission, scope, rate limit) and written to the audit log with its
 counts by type, never values. Fail closed: if detection or the vault errors, the caller gets an error and no text.
 """
+import base64
 import json
 import logging
 import re
@@ -15,10 +16,11 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -185,8 +187,14 @@ def _text_op(mode: str, body: TextIn, caller: auth.Caller) -> dict:
     scope = _scope(caller, body.scope) if mode == "tokenise" else (body.scope or "")
     p = _resolve(body.options)
     r = Redactor(mode, p, scope)
+    off = not policy.protection_on()
 
     def work():
+        if off:                                  # the admin switched PII protection off: nothing is changed or stored
+            out = {"text": body.text, "findings": [], "counts": {}, "total": 0, "protection": "off"}
+            if mode == "tokenise":
+                out["scope"] = scope
+            return out, "protection off"
         new, changes = r.run(body.text)
         findings = [{"type": c.entity_type, "start": c.start, "end": c.end, "score": c.score,
                      "replacement": c.replacement} for c in changes]
@@ -239,16 +247,23 @@ def _file_op(mode: str, upload: UploadFile, scope_in: str | None, options: str |
             raise HTTPException(400, "options must be a JSON object.")
         p = _resolve(raw)
     r = Redactor(mode, p, scope)
+    off = mode != "unmask" and not policy.protection_on()
 
     def work():
-        out, media, extra = files.process(name, data, r)
+        if off:
+            kind = files.kind_of(name)
+            out, media, extra = data, files.MEDIA[kind], {"file_type": kind, "protection": "off"}
+        else:
+            out, media, extra = files.process(name, data, r)
         summary = {**r.summary(), **extra}
         stem, _, ext = name.rpartition(".")
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stem or "file")[:100]
         suffix = {"mask": "masked", "tokenise": "tokenised", "unmask": "unmasked"}[mode]
         headers = {"Content-Disposition": f'attachment; filename="{safe}.{suffix}.{ext or extra["file_type"]}"',
                    "X-PII-Summary": json.dumps(summary, separators=(",", ":")),
-                   "Access-Control-Expose-Headers": "X-PII-Summary"}
+                   "Access-Control-Expose-Headers": "X-PII-Summary, X-PII-Protection"}
+        if off:
+            headers["X-PII-Protection"] = "off"
         return Response(out, media_type=media, headers=headers), f"{extra['file_type']} {len(data)} bytes"
     return _run(caller, f"file_{mode}", scope, work, lambda: dict(r.counts))
 
@@ -293,6 +308,50 @@ def admin_op(caller: auth.Caller, operation: str, fn):
         raise
     finally:
         audit.record(caller, operation, "", status, duration_ms=int((time.monotonic() - started) * 1000))
+
+
+@app.get("/v1/admin/overview", tags=["admin"], summary="Status, protection switch, counts and the last 24 hours")
+def get_overview(caller: auth.Caller = Depends(require("admin", "admin_overview"))):
+    stored = vault.stats()
+    all_keys = auth.list_keys()
+    return {"health": json.loads(health().body), "protection_enabled": policy.protection_on(),
+            "counts": {"active_keys": sum(k["active"] for k in all_keys), "fields": len(policy.fields()),
+                       "fields_enabled": sum(f["enabled"] for f in policy.fields()),
+                       "field_values": sum(len(f["terms"]) for f in policy.fields()),
+                       "custom_types": len(policy.custom_types()), "vault_values": sum(v["total"] for v in stored),
+                       "vault_scopes": len(stored)},
+            "last_24h": audit.summary(24),
+            "limits": {"max_text_chars": config.max_text_chars, "max_upload_mb": config.max_upload_mb,
+                       "default_rate_limit": config.default_rate_limit}}
+
+
+@app.post("/v1/admin/check", tags=["admin"],
+          summary="Check a document: what would be hidden, a text preview of the result and the masked file")
+def check_document(file: UploadFile = File(...), options: str | None = Form(None),
+                   caller: auth.Caller = Depends(require("admin", "admin_check"))):
+    limit = config.max_upload_mb * 1024 * 1024
+    data = file.file.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(413, f"Files are limited to {config.max_upload_mb} MB.")
+    if not data:
+        raise HTTPException(400, "The file is empty.")
+    name = file.filename or "file"
+    try:
+        raw = json.loads(options) if options else None
+    except json.JSONDecodeError:
+        raise HTTPException(400, "options must be a JSON object.") from None
+    if raw is not None and not isinstance(raw, dict):
+        raise HTTPException(400, "options must be a JSON object.")
+    r = Redactor("mask", _resolve(raw), "")       # a check never stores anything, and always applies the settings
+
+    def work():
+        out, media, extra = files.process(name, data, r)
+        preview, cut = files.preview_text(extra["file_type"], out)
+        result = {"file": name, "media_type": media, "preview": preview, "preview_truncated": cut,
+                  "masked_file": base64.b64encode(out).decode() if len(out) <= CHECK_FILE_LIMIT else None,
+                  **r.summary(), **extra}
+        return result, f"{extra['file_type']} {len(data)} bytes"
+    return _run(caller, "admin_check", "", work, lambda: dict(r.counts))
 
 
 @app.get("/v1/admin/settings", tags=["admin"])
@@ -411,7 +470,7 @@ def health():
     state = detect.status()
     body = {"status": "ok" if db_ok and state == "ready" else ("starting" if db_ok and state == "loading" else "error"),
             "version": __version__, "detector": state, "database": db_ok, "vault": vault.available(),
-            "ocr": tessdata() is not None}
+            "ocr": tessdata() is not None, "protection": policy.protection_on() if db_ok else None}
     return JSONResponse(body, status_code=200 if body["status"] != "error" else 503)
 
 
@@ -419,3 +478,27 @@ def health():
 async def unexpected(_request: Request, exc: Exception):
     log.error("unexpected error: %s", type(exc).__name__, exc_info=True)
     return JSONResponse({"detail": "Internal error."}, status_code=500)
+
+
+# ---- the admin page ---------------------------------------------------------------------------------------------------------
+# A static page: it holds no data, and every call it makes needs an admin key (kept in the browser tab only).
+STATIC = Path(__file__).parent / "static"
+CHECK_FILE_LIMIT = 8 * 1024 * 1024        # a checked file's masked copy is returned in the answer up to this size
+PAGE_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+                               "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-cache",
+}
+ASSETS = {"admin.css": "text/css", "admin.js": "text/javascript", "favicon.svg": "image/svg+xml"}
+
+
+@app.get("/admin", include_in_schema=False)
+def admin_page():
+    return FileResponse(STATIC / "index.html", media_type="text/html", headers=PAGE_HEADERS)
+
+
+@app.get("/admin/assets/{name}", include_in_schema=False)
+def admin_asset(name: str):
+    if name not in ASSETS:
+        raise HTTPException(404, "Not found.")
+    return FileResponse(STATIC / name, media_type=ASSETS[name], headers=PAGE_HEADERS)

@@ -36,6 +36,11 @@ class Redactor:
         """[(what the value becomes, labels)] for table cells that label the cell beside or below them."""
         return self.policy.label_groups if self.policy and self.mode != "unmask" else ()
 
+    @property
+    def scrub(self) -> bool:
+        """Whether to clear document properties (author, title, ...) from the file."""
+        return bool(self.policy and self.policy.scrub_metadata and self.mode != "unmask")
+
     def replacement(self, entity: str, value: str) -> str:
         if self.mode == "mask":
             return f"<{entity}>"

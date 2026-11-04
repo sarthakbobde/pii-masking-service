@@ -111,9 +111,10 @@ def pdf(data: bytes, r: Redactor) -> tuple[bytes, dict]:
                     page.delete_link(link)
             page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
                                   text=pymupdf.PDF_REDACT_TEXT_REMOVE)
-    doc.scrub(attached_files=True, embedded_files=True, javascript=True, metadata=True, xml_metadata=True, thumbnails=True,
+    doc.scrub(attached_files=True, embedded_files=True, javascript=True, metadata=r.scrub, xml_metadata=r.scrub, thumbnails=True,
               reset_responses=True, clean_pages=False, hidden_text=False, redactions=False, remove_links=False, reset_fields=False)
-    doc.set_metadata({})
+    if r.scrub:
+        doc.set_metadata({})
     pages = doc.page_count
     out = doc.tobytes(garbage=4, deflate=True)
     doc.close()

@@ -19,6 +19,7 @@ Detection uses Microsoft Presidio with spaCy (`en_core_web_sm`). It covers:
 - [Quick start (Docker)](#quick-start-docker)
 - [Configuration](#configuration)
 - [API keys](#api-keys)
+- [The admin page](#the-admin-page)
 - [Endpoints](#endpoints)
 - [Files: what is covered](#files-what-is-covered)
 - [Fields: the dictionary of values to hide](#fields-the-dictionary-of-values-to-hide)
@@ -109,6 +110,28 @@ python -m app.cli list-keys
 python -m app.cli revoke-key 3
 ```
 
+## The admin page
+
+Open **`/admin`** (for example http://localhost:8000/admin) and sign in with a key that has the `admin` permission. The
+key stays in the browser tab only and is cleared when the tab closes. The page is plain HTML, CSS and JavaScript served by
+the service itself, with a strict content security policy. It needs nothing else installed.
+
+| Screen | What an admin can do |
+|---|---|
+| **Overview** | See the **PII protection switch**, requests and values hidden in the last 24 hours, the most hidden types, system health (detector, database, vault, OCR), and recent activity. |
+| **Fields to hide** | Add, edit, pause and delete [fields](#fields-the-dictionary-of-values-to-hide): the labels that introduce a value and the known values to hide. Paste values one per line. |
+| **Detection settings** | Switch each kind of data on or off (21 built in, plus your own regex types with a pattern tester), set the confidence threshold, names, sensitive keywords, the allow-list, document-property removal, OCR, and whether callers may override settings. Save and discard are at the bottom. |
+| **API keys** | Create keys (shown once, with a copy button), change permissions, scopes and rate limits, and revoke. |
+| **Audit log** | Filter by caller or operation. Counts only, never values. |
+| **Token vault** | See how many values each scope stores, and delete a scope's values. |
+| **Check a document** | Add a PDF, Word, PowerPoint, Excel, CSV or text file and see what would be hidden: counts by kind, a text preview with the hidden values highlighted, and a download of the masked file. Nothing is stored. |
+| **Try it** | Run sample text or a file through mask, tokenise or unmask with optional per-request options. |
+
+**PII protection switch.** Turning it off (a confirmation is required) makes `mask` and `tokenise` return text and files
+**unchanged**: nothing is detected or stored, and the response says so (`"protection": "off"`, header
+`X-PII-Protection: off`). `unmask` still works. Use it for testing or an emergency. The state is shown in the page's top bar,
+in `GET /healthz` and in `GET /v1/admin/overview`.
+
 ## Endpoints
 
 In the examples, `$KEY` is an API key with the needed permission.
@@ -185,6 +208,8 @@ tokenising removes the original text from the PDF (the request gets `415`).
 
 | Method and path | Purpose |
 |---|---|
+| `GET /v1/admin/overview` | Health, protection switch, counts and the last 24 hours (what the Overview screen shows). |
+| `POST /v1/admin/check` | Multipart `file` (and optional `options`): what would be hidden, a text preview of the masked result and the masked file (base64, up to 8 MB). Stores nothing. |
 | `GET /v1/admin/settings` | The settings in force, plus the known built-in and custom types. |
 | `PUT /v1/admin/settings` | Change some or all settings (partial JSON). |
 | `GET /v1/admin/custom-types`, `POST` the same path | List or add regex types: `{"name": "EMPLOYEE_ID", "pattern": "\\bEMP-\\d{5}\\b", "context": ["employee"], "confidence": 85}`. A new type is enabled straight away. |
@@ -318,6 +343,8 @@ The settings file (`PII_SETTINGS_FILE`) can hold a `fields` list, which replaces
 | `allow_list` | `[]` | Exact values never masked (for example a shared HR mailbox). |
 | `allow_overrides` | `true` | Whether requests may send `options`. |
 | `ocr_enabled`, `ocr_language` | `true`, `eng` | OCR for scanned PDF pages. |
+| `protection_enabled` | `true` | The master switch. When `false`, mask and tokenise pass text and files through unchanged. |
+| `scrub_metadata` | `true` | Clear author, last editor, title and similar properties from Word, PowerPoint, Excel and PDF files. |
 
 A request's `options` can override `types`, `threshold`, `mask_names`, `keywords` and `allow_list`, and add `fields`
 values, for that request only:
