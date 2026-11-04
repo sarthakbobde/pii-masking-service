@@ -2,7 +2,7 @@
 
 Text:  POST /v1/mask, /v1/tokenise, /v1/unmask
 Files: POST /v1/files/mask, /v1/files/tokenise, /v1/files/unmask (same file type back; summary in X-PII-Summary)
-Admin: /v1/admin/settings, /v1/admin/custom-types, /v1/admin/keys, /v1/admin/audit, /v1/admin/vault
+Admin: /v1/admin/settings, /v1/admin/custom-types, /v1/admin/fields, /v1/admin/keys, /v1/admin/audit, /v1/admin/vault
 GET /healthz needs no key.
 
 Every call is checked against the caller's key (permission, scope, rate limit) and written to the audit log with its
@@ -48,6 +48,12 @@ app = FastAPI(title="PII masking service", version=__version__, lifespan=lifespa
 
 
 # ---- requests and responses ---------------------------------------------------------------------------------------------
+class RequestField(BaseModel):
+    name: str = Field(..., description="A stored field (its values are added to) or a new name for this request only.")
+    terms: list[str] = []
+    labels: list[str] = []
+
+
 class Options(BaseModel):
     """Per-request overrides of the service settings (allowed unless the admin switched them off)."""
     types: list[str] | None = None
@@ -55,6 +61,12 @@ class Options(BaseModel):
     mask_names: bool | None = None
     keywords: list[str] | None = None
     allow_list: list[str] | None = None
+    fields: list[RequestField] | None = Field(None, description="Extra known values for this request, e.g. this client's name.")
+
+
+class TermsChange(BaseModel):
+    add: list[str] = []
+    remove: list[str] = []
 
 
 class TextIn(BaseModel):
@@ -319,6 +331,33 @@ def test_pattern(body: PatternTest, caller: auth.Caller = Depends(require("admin
         policy.check_custom({"name": "TRY_IT", "pattern": body.pattern})
         return {"matches": [m.group(0) for m in re.finditer(body.pattern, body.text[:10_000])][:20]}
     return _admin_call(fn)
+
+
+@app.get("/v1/admin/fields", tags=["admin"], summary="The dictionary: every field with its values and labels")
+def get_fields(caller: auth.Caller = Depends(require("admin", "admin_fields_read"))):
+    return policy.fields()
+
+
+@app.post("/v1/admin/fields", tags=["admin"], status_code=201,
+          summary="Add a field: {name, description, terms, labels, enabled}")
+def add_field(body: dict[str, Any], caller: auth.Caller = Depends(require("admin", "admin_fields_create"))):
+    return admin_op(caller, "admin_fields_create", lambda: policy.save_field(body, caller.name))
+
+
+@app.patch("/v1/admin/fields/{field_id}", tags=["admin"], summary="Change a field; terms or labels given replace the old ones")
+def change_field(field_id: int, body: dict[str, Any], caller: auth.Caller = Depends(require("admin", "admin_fields_update"))):
+    return admin_op(caller, "admin_fields_update", lambda: policy.save_field(body, caller.name, field_id))
+
+
+@app.post("/v1/admin/fields/{field_id}/terms", tags=["admin"], summary="Add values to a field's dictionary or take some out")
+def change_field_terms(field_id: int, body: TermsChange,
+                       caller: auth.Caller = Depends(require("admin", "admin_fields_terms"))):
+    return admin_op(caller, "admin_fields_terms", lambda: policy.change_terms(field_id, body.add, body.remove, caller.name))
+
+
+@app.delete("/v1/admin/fields/{field_id}", tags=["admin"])
+def remove_field(field_id: int, caller: auth.Caller = Depends(require("admin", "admin_fields_delete"))):
+    return admin_op(caller, "admin_fields_delete", lambda: policy.delete_field(field_id))
 
 
 @app.get("/v1/admin/keys", tags=["admin"])

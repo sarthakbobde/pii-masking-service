@@ -8,14 +8,35 @@ unmasking, permissions, files, a custom type added live and the audit log. Maske
 """
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
+import docx
 import httpx
 import pymupdf
 
 HERE = Path(__file__).parent
 ROOT = HERE.parent
+sys.path.insert(0, str(ROOT))
+from app.policy import STARTER_FIELDS  # noqa: E402
+
+# Our (made-up) company's details, kept in the dictionary once; the client's are sent with the request.
+OUR_COMPANY = {
+    "COMPANY_NAME": ["Acme Analytics Private Limited", "Acme Analytics Pvt Ltd", "Acme Analytics"],
+    "COMPANY_CIN": ["U72900KA2015PTC081234"],
+    "COMPANY_GSTIN": ["29AAKCA1234F1Z5"],
+    "COMPANY_PAN": ["AAKCA1234F"],
+    "COMPANY_ADDRESS": ["4th Floor, Prestige Tower, MG Road, Bengaluru 560001"],
+    "INTERNAL_SIGNATORY": ["Priya Nair"],
+}
+THIS_CLIENT = [
+    {"name": "CLIENT_COMPANY_NAME", "terms": ["Globex Retail Pvt Ltd", "Globex Retail"]},
+    {"name": "CLIENT_CIN", "terms": ["U51909MH2012PTC234567"]},
+    {"name": "CLIENT_GSTIN", "terms": ["27AACCG5678K1ZQ"]},
+    {"name": "CLIENT_ADDRESS", "terms": ["12 Marine Drive, Mumbai 400020"]},
+    {"name": "CLIENT_SIGNATORY", "terms": ["Rahul Mehta"]},
+]
 TEXT = ("Hi, I'm Rohan. Mail me at rohan.sharma@gmail.com or call +91 98450 12345. "
         "My PAN is BQKPS4821L. Salary: 24,50,000. Case ref CX-88213.")
 
@@ -54,8 +75,9 @@ class Demo:
               f"(key starts {info['key'][:12]}..., shown once, stored only as a hash)")
         return {"X-API-Key": info["key"]}
 
-    def file(self, headers, mode: str, name: str) -> dict:
-        r = self.http.post(f"/v1/files/{mode}", headers=headers, files={"file": (name, (HERE / "files" / name).read_bytes())})
+    def file(self, headers, mode: str, name: str, options: dict | None = None) -> dict:
+        r = self.http.post(f"/v1/files/{mode}", headers=headers, files={"file": (name, (HERE / "files" / name).read_bytes())},
+                           data={"options": json.dumps(options)} if options else None)
         r.raise_for_status()
         stem, ext = name.rsplit(".", 1)
         out = HERE / "output" / f"{stem}.{'masked' if mode == 'mask' else mode + 'd'}.{ext}"
@@ -110,6 +132,24 @@ class Demo:
         print(f"  HTTP {r.status_code}: added {r.json()['name']}")
         self.show(self.http.post("/v1/mask", headers=app, json={"text": TEXT}), ["text"])
         self.http.delete(f"/v1/admin/custom-types/{type_id}", headers=self.admin)
+
+        self.step("Fields: the dictionary of company and client details",
+                  "our company's name, CIN, GSTIN, PAN, address and signatory are stored once; this client's are sent "
+                  "with the request")
+        fields = {f["name"]: f for f in self.http.get("/v1/admin/fields", headers=self.admin).json()}
+        for f in STARTER_FIELDS:
+            if f["name"] not in fields:
+                fields[f["name"]] = self.http.post("/v1/admin/fields", headers=self.admin, json=f).json()
+        for name, terms in OUR_COMPANY.items():
+            self.http.post(f"/v1/admin/fields/{fields[name]['id']}/terms", headers=self.admin, json={"add": terms})
+        for f in self.http.get("/v1/admin/fields", headers=self.admin).json():
+            print(f"  {f['name']:<22} {len(f['terms'])} value(s)   labels: {', '.join(f['labels'][:3])}")
+        self.file(app, "mask", "service-agreement.docx", {"fields": THIS_CLIENT})
+        d = docx.Document(HERE / "output" / "service-agreement.masked.docx")
+        for p in d.paragraphs:
+            if p.text.strip():
+                print("  | " + p.text)
+        print("  table: " + "; ".join(f"{r.cells[0].text} = {r.cells[1].text}" for r in d.tables[0].rows))
 
         self.step("Audit log", "every call: who, what, scope, status, counts by type; never a value")
         for e in self.http.get("/v1/admin/audit", headers=self.admin, params={"limit": 8}).json():

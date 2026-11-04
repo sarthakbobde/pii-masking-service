@@ -8,14 +8,14 @@ Covered: Word body, tables, text boxes, headers, footers, footnotes, endnotes an
 tables, groups), speaker notes. Not covered: text inside charts, SmartArt diagrams, embedded objects and images.
 Document properties (author, last modified by, title, subject, keywords, comments) are cleared.
 
-Tables follow the spreadsheet rules: a cell that is just a keyword ("Home address") makes the next cell in its row
-sensitive, and a keyword in the first row makes the cells below it sensitive. Such a cell is replaced whole.
+Tables follow the spreadsheet rules: a cell that is just a keyword or field label ("Home address", "Client Name") makes
+the next cell in its row sensitive, and one in the first row makes the cells below it sensitive. Such a cell is
+replaced whole, by <SENSITIVE_VALUE> or by the field's name.
 """
 import io
 
 from app.detect import KEYWORD_SCORE
 from app.files.sheet import sensitive_cells
-from app.policy import KEYWORD_TYPE
 from app.redact import Change, Redactor
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -50,26 +50,28 @@ def _text(p, spec) -> str:
     return "".join(t for _, t in _segments(p, spec))
 
 
-def _whole_cells(root, spec, keywords) -> set:
-    """Paragraphs of table cells that are sensitive because of a keyword beside or above them."""
-    out = set()
-    if not keywords:
+def _whole_cells(root, spec, groups) -> dict:
+    """{paragraph: what it becomes} for table cells that are sensitive because of a keyword or field label beside or
+    above them."""
+    out: dict = {}
+    if not groups:
         return out
     for tbl in root.iter(spec["tbl"]):
         rows = [[tc for tc in tr if tc.tag == spec["tc"]] for tr in tbl if tr.tag == spec["tr"]]
         grid = [["\n".join(_text(p, spec) for p in tc.iter(spec["p"])) for tc in row] for row in rows]
-        for ri, ci in sensitive_cells(grid, keywords):
-            out.update(rows[ri][ci].iter(spec["p"]))
+        for (ri, ci), entity in sensitive_cells(grid, groups).items():
+            out.update((p, entity) for p in rows[ri][ci].iter(spec["p"]))
     return out
 
 
-def redact_paragraph(p, spec, r: Redactor, whole: bool = False) -> int:
+def redact_paragraph(p, spec, r: Redactor, whole: str | None = None) -> int:
+    """Replace what is found in a paragraph; with `whole`, the paragraph's whole text becomes that type."""
     segs = _segments(p, spec)
     text = "".join(t for _, t in segs)
     if whole:
         value = text.strip()
         start = text.find(value)
-        changes = [Change(start, start + len(value), KEYWORD_TYPE, KEYWORD_SCORE, r.whole(value))] if value else []
+        changes = [Change(start, start + len(value), whole, KEYWORD_SCORE, r.whole(value, whole))] if value else []
     else:
         changes = r.find(text)
     if not changes:
@@ -132,9 +134,9 @@ def docx(data: bytes, r: Redactor) -> bytes:
         if id(root) in seen:
             continue
         seen.add(id(root))
-        whole = _whole_cells(root, WORD, r.keywords)
+        whole = _whole_cells(root, WORD, r.label_groups)
         for p in _paragraphs(root, WORD):
-            redact_paragraph(p, WORD, r, p in whole)
+            redact_paragraph(p, WORD, r, whole.get(p))
     if r.mode != "unmask":
         _clear_properties(doc.core_properties)
     out = io.BytesIO()
@@ -146,9 +148,9 @@ def pptx(data: bytes, r: Redactor) -> bytes:
     import pptx as python_pptx
     prs = python_pptx.Presentation(io.BytesIO(data))
     for slide in prs.slides:
-        whole = _whole_cells(slide._element, SLIDE, r.keywords)
+        whole = _whole_cells(slide._element, SLIDE, r.label_groups)
         for p in _paragraphs(slide._element, SLIDE):
-            redact_paragraph(p, SLIDE, r, p in whole)
+            redact_paragraph(p, SLIDE, r, whole.get(p))
         if slide.has_notes_slide:
             for p in _paragraphs(slide.notes_slide._element, SLIDE):
                 redact_paragraph(p, SLIDE, r)

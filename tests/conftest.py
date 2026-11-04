@@ -27,11 +27,15 @@ def client():
 
 @pytest.fixture(autouse=True)
 def _fresh(client):
-    """Default settings and empty rate-limit windows for every test."""
+    """Default settings, the starter fields and empty rate-limit windows for every test."""
     auth.reset()
     client.put("/v1/admin/settings", headers=ADMIN, json=policy.defaults())
     for t in client.get("/v1/admin/custom-types", headers=ADMIN).json():
         client.delete(f"/v1/admin/custom-types/{t['id']}", headers=ADMIN)
+    for f in client.get("/v1/admin/fields", headers=ADMIN).json():
+        client.delete(f"/v1/admin/fields/{f['id']}", headers=ADMIN)
+    for f in policy.STARTER_FIELDS:
+        client.post("/v1/admin/fields", headers=ADMIN, json=f)
     policy.invalidate()
     yield
     auth.reset()

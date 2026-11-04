@@ -224,8 +224,9 @@ def test_upload_limit(client, make_key, monkeypatch):
 
 def test_table_keywords_headers_and_key_value_rows():
     from app.files.sheet import sensitive_cells
-    kw = ["Salary", "DOB", "PAN", "Aadhaar No"]
+    groups = [("SENSITIVE_VALUE", ["Salary", "DOB", "PAN", "Aadhaar No"]), ("CLIENT_COMPANY_NAME", ["Client Name"])]
     staff = [["Name", "DOB", "Salary", "Team"], ["Asha", "03/05/1991", 1850000, "Data"]]
-    assert sensitive_cells(staff, kw) == {(1, 1), (1, 2)}                 # the "Team" header is left alone
-    key_value = [["PAN", "BQKPS4821L"], ["Aadhaar No", "4521 7896 3214"], ["Team", "Data"]]
-    assert sensitive_cells(key_value, kw) == {(0, 1), (1, 1)}             # labels in the first column stay readable
+    assert sensitive_cells(staff, groups) == {(1, 1): "SENSITIVE_VALUE", (1, 2): "SENSITIVE_VALUE"}   # "Team" stays
+    key_value = [["PAN", "BQKPS4821L"], ["Aadhaar No", "4521 7896 3214"], ["Client Name:", "Globex"], ["Team", "Data"]]
+    assert sensitive_cells(key_value, groups) == {(0, 1): "SENSITIVE_VALUE", (1, 1): "SENSITIVE_VALUE",
+                                                  (2, 1): "CLIENT_COMPANY_NAME"}       # labels in the first column stay

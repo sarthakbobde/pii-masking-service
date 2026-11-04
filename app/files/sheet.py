@@ -12,44 +12,47 @@ import csv
 import io
 from datetime import date, datetime, time
 
-from app.detect import is_keyword_label
+from app.detect import label_of
 from app.redact import Redactor
 
 LOOK_RIGHT = 3          # how far a keyword label looks for its value
 
 
-def sensitive_cells(grid: list[list], keywords) -> set[tuple[int, int]]:
-    """(row, col) of cells that are sensitive because of a keyword header or a keyword label beside them."""
-    if not keywords:
-        return set()
-    out = set()
+def sensitive_cells(grid: list[list], groups) -> dict[tuple[int, int], str]:
+    """{(row, col): what the cell becomes} for cells that are sensitive because of a keyword or field label: as the
+    header of their column, or as the cell to their left. `groups` is [(what the value becomes, labels)]."""
+    if not groups:
+        return {}
+    out: dict[tuple[int, int], str] = {}
 
-    def label(v) -> bool:
-        return isinstance(v, str) and is_keyword_label(v, keywords)
+    def label(v) -> str | None:
+        return label_of(v, groups) if isinstance(v, str) else None
 
     header = next((i for i, row in enumerate(grid) if any(v not in (None, "") for v in row)), None)
-    header_cols = set()
+    header_cols: dict[int, str] = {}
     if header is not None:
         for c, v in enumerate(grid[header]):
             below = [grid[r][c] for r in range(header + 1, len(grid)) if c < len(grid[r])]
+            entity = label(v)
             # a column header only when the cells below are values, not more labels (a key-value table)
-            if label(v) and not any(label(x) for x in below):
-                header_cols.add(c)
+            if entity and not any(label(x) for x in below):
+                header_cols[c] = entity
         for r in range(header + 1, len(grid)):
-            for c in header_cols:
+            for c, entity in header_cols.items():
                 if c < len(grid[r]) and grid[r][c] not in (None, ""):
-                    out.add((r, c))
+                    out[(r, c)] = entity
     for r, row in enumerate(grid):
         for c, v in enumerate(row):
             if r == header and c in header_cols:
                 continue                                  # a column header is not a label for the cell beside it
-            if label(v):
+            entity = label(v)
+            if entity:
                 for c2 in range(c + 1, min(len(row), c + 1 + LOOK_RIGHT)):
                     nxt = row[c2]
                     if nxt in (None, ""):
                         continue
-                    if not (isinstance(nxt, str) and (is_keyword_label(nxt, keywords) or nxt.startswith("="))):
-                        out.add((r, c2))
+                    if not (isinstance(nxt, str) and (label(nxt) or nxt.startswith("="))):
+                        out[(r, c2)] = entity
                     break
     return out
 
@@ -69,14 +72,14 @@ def xlsx(data: bytes, r: Redactor) -> bytes:
     for ws in wb.worksheets:
         rows = list(ws.iter_rows())
         grid = [[c.value for c in row] for row in rows]
-        whole = sensitive_cells(grid, r.keywords)
+        whole = sensitive_cells(grid, r.label_groups)
         for ri, row in enumerate(rows):
             for ci, cell in enumerate(row):
                 v = cell.value
                 if v is None or cell.data_type == "f" or (isinstance(v, str) and v.startswith("=")):
                     pass
                 elif (ri, ci) in whole:
-                    cell.value = r.whole(_as_text(v))
+                    cell.value = r.whole(_as_text(v), whole[(ri, ci)])
                 elif isinstance(v, str):
                     new, changes = r.run(v)
                     if changes:
@@ -105,11 +108,11 @@ def csv_bytes(data: bytes, r: Redactor, decode, encode) -> bytes:
     except csv.Error:
         dialect = csv.excel
     grid = [list(row) for row in csv.reader(io.StringIO(text, newline=""), dialect)]
-    whole = sensitive_cells(grid, r.keywords)
+    whole = sensitive_cells(grid, r.label_groups)
     for ri, row in enumerate(grid):
         for ci, v in enumerate(row):
             if (ri, ci) in whole:
-                row[ci] = r.whole(v)
+                row[ci] = r.whole(v, whole[(ri, ci)])
             elif v:
                 row[ci] = r.run(v)[0]
     out = io.StringIO(newline="")

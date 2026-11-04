@@ -50,6 +50,19 @@ class CustomType(Base):
     updated_by: Mapped[str] = mapped_column(String(80), default="")
 
 
+class Field(Base):
+    """A dictionary entry: known values to mask wherever they appear, and labels whose following value is masked."""
+    __tablename__ = "fields"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(40), unique=True)
+    description: Mapped[str] = mapped_column(String(200), default="")
+    terms: Mapped[list] = mapped_column(JSON, default=list)
+    labels: Mapped[list] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+    updated_by: Mapped[str] = mapped_column(String(80), default="")
+
+
 class Secret(Base):
     __tablename__ = "secrets"
     name: Mapped[str] = mapped_column(String(40), primary_key=True)

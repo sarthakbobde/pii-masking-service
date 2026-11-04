@@ -1,5 +1,5 @@
 {
-  "enabled_types": ["EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "IN_AADHAAR", "IN_PAN", "IBAN_CODE"],
+  "enabled_types": ["EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "IN_AADHAAR", "IN_PAN", "IN_GSTIN", "IN_CIN", "IBAN_CODE"],
   "threshold": 40,
   "mask_names": false,
   "keywords_enabled": true,

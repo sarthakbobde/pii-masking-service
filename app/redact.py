@@ -32,8 +32,9 @@ class Redactor:
         self._tokens: dict[tuple[str, str], str] = {}
 
     @property
-    def keywords(self) -> tuple:
-        return self.policy.keywords if self.policy and self.mode != "unmask" else ()
+    def label_groups(self) -> tuple:
+        """[(what the value becomes, labels)] for table cells that label the cell beside or below them."""
+        return self.policy.label_groups if self.policy and self.mode != "unmask" else ()
 
     def replacement(self, entity: str, value: str) -> str:
         if self.mode == "mask":
@@ -44,7 +45,7 @@ class Redactor:
         return f"<{self._tokens[key]}>"
 
     def whole(self, value: str, entity: str = KEYWORD_TYPE) -> str:
-        """Replace a whole value (a spreadsheet cell next to a keyword) and count it."""
+        """Replace a whole value (a table cell next to a keyword or field label) and count it."""
         self.counts[entity] += 1
         return self.replacement(entity, value)
 

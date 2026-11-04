@@ -92,7 +92,35 @@ def excel():
     wb.save(OUT / "staff-list.xlsx")
 
 
+def contract():
+    """A service agreement between two made-up companies, for the fields (dictionary) step."""
+    d = docx.Document()
+    d.add_heading("Master Services Agreement", 0)
+    d.add_paragraph(
+        "This Agreement is made on 1 November 2026 between Acme Analytics Private Limited, a company incorporated under "
+        "the Companies Act, 2013, with CIN U72900KA2015PTC081234, GSTIN 29AAKCA1234F1Z5 and PAN AAKCA1234F, having its "
+        "registered office at 4th Floor, Prestige Tower, MG Road, Bengaluru 560001 (the \"Service Provider\").")
+    d.add_paragraph(
+        "AND Globex Retail Pvt. Ltd., with CIN U51909MH2012PTC234567 and GSTIN 27AACCG5678K1ZQ, having its registered "
+        "office at 12 Marine Drive, Mumbai 400020 (the \"Client\").")
+    d.add_paragraph(
+        "Acme Analytics will provide data engineering services to Globex Retail for twelve months. Fees are payable "
+        "within 30 days of each invoice raised by ACME ANALYTICS PVT. LTD.")
+    d.add_heading("Party details", 2)
+    t = d.add_table(rows=5, cols=2)
+    t.style = "Light Grid Accent 1"
+    for i, (k, v) in enumerate([("Client Name", "Globex Retail Pvt. Ltd."), ("Client GSTIN", "27AACCG5678K1ZQ"),
+                                ("Client PAN", "AACCG5678K"), ("Billing Address", "12 Marine Drive, Mumbai 400020"),
+                                ("Company GSTIN", "29AAKCA1234F1Z5")]):
+        t.cell(i, 0).text, t.cell(i, 1).text = k, v
+    d.add_heading("Signatures", 2)
+    d.add_paragraph("For Acme Analytics Private Limited. Authorised Signatory: Ms. Priya Nair, Director.")
+    d.add_paragraph("For Globex Retail Pvt. Ltd. Client Authorised Signatory: Mr. Rahul Mehta, Chief Financial Officer.")
+    d.core_properties.author = "Priya Nair"
+    d.save(OUT / "service-agreement.docx")
+
+
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
-    word(), pdf(), excel()
+    word(), pdf(), excel(), contract()
     print("written to", OUT)

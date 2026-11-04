@@ -5,9 +5,12 @@ A standalone HTTP API that finds personal data in text and files and either **ma
 encrypted in a vault, which callers with the `unmask` permission can restore). Files come back in the same format: PDF, DOCX,
 PPTX, XLSX, CSV, TXT and Markdown.
 
-Detection uses Microsoft Presidio with spaCy (`en_core_web_sm`). It covers built-in types (email, phone, cards, SSN,
-Aadhaar, PAN, IBAN and more), regular-expression types you define, and **sensitive keywords**: the value after
-"Salary:", "DOB" and similar keywords is masked whatever its format.
+Detection uses Microsoft Presidio with spaCy (`en_core_web_sm`). It covers:
+- **built-in types**: email, phone, cards, SSN, Aadhaar, PAN, GSTIN, CIN, IBAN and more;
+- **regular-expression types** you define;
+- **a dictionary of fields** you maintain: known values such as your company's or a client's name, address or
+  signatory, and labels such as "Client Name:" whose value is masked as that field;
+- **sensitive keywords**: the value after "Salary:", "DOB" and similar keywords is masked whatever its format.
 
 ---
 
@@ -18,6 +21,7 @@ Aadhaar, PAN, IBAN and more), regular-expression types you define, and **sensiti
 - [API keys](#api-keys)
 - [Endpoints](#endpoints)
 - [Files: what is covered](#files-what-is-covered)
+- [Fields: the dictionary of values to hide](#fields-the-dictionary-of-values-to-hide)
 - [Settings and per-request options](#settings-and-per-request-options)
 - [Security notes](#security-notes)
 - [Tests](#tests)
@@ -186,6 +190,10 @@ tokenising removes the original text from the PDF (the request gets `415`).
 | `GET /v1/admin/custom-types`, `POST` the same path | List or add regex types: `{"name": "EMPLOYEE_ID", "pattern": "\\bEMP-\\d{5}\\b", "context": ["employee"], "confidence": 85}`. A new type is enabled straight away. |
 | `PUT` or `DELETE /v1/admin/custom-types/{id}` | Change or delete a type. A rename carries over to the enabled list. |
 | `POST /v1/admin/custom-types/test` | `{"pattern": "...", "text": "sample"}` shows what the pattern matches (at most 20 matches). |
+| `GET /v1/admin/fields`, `POST` the same path | List the dictionary, or add a field: `{"name", "description", "terms", "labels", "enabled"}` ([fields](#fields-the-dictionary-of-values-to-hide)). |
+| `PATCH /v1/admin/fields/{id}` | Change a field. `terms` or `labels` given replace the old lists; `{"enabled": false}` pauses it. |
+| `POST /v1/admin/fields/{id}/terms` | `{"add": [...], "remove": [...]}` adds values to a field or takes some out. |
+| `DELETE /v1/admin/fields/{id}` | Delete a field. |
 | `GET /v1/admin/keys`, `POST` the same path | List keys (never the key itself) or create one: `{"name", "permissions", "scopes", "rate_limit"}`. The answer holds `key`, shown only once. |
 | `PATCH /v1/admin/keys/{id}` | Change `permissions`, `scopes` or `rate_limit`. |
 | `DELETE /v1/admin/keys/{id}` | Revoke a key. It stops working within 5 seconds. |
@@ -231,11 +239,79 @@ is OCR'd at 300 dpi and the image pixels under each value are blanked, with the 
 OCR data, such pages are left unchanged and listed in `unprocessed_image_pages`, so check that field. OCR quality depends
 on the scan. `ocr_language` takes Tesseract codes such as `eng` or `eng+hin` (install the matching language data).
 
+## Fields: the dictionary of values to hide
+
+A **field** is a named kind of data you want hidden, such as `CLIENT_COMPANY_NAME`. Its name is what the value becomes
+(`<CLIENT_COMPANY_NAME>`, or a token such as `<CLIENT_COMPANY_NAME_3f9a12c0>`). A field has:
+
+- **terms**: the known values. Each is found wherever it appears, ignoring case, spacing, and full stops or commas
+  between words. For example, the term `Acme Technologies Pvt Ltd` also finds "ACME Technologies Pvt. Ltd.". Whole words
+  only: the term `Acme` does not match "Acmeville".
+- **labels**: words that introduce a value. After "Client Name:" (or `=`, `|`, ` - `), the value up to the end of the
+  sentence or cell is masked as this field. In a table, a cell that is just a label masks the cell beside it, or every
+  cell below it when the label is a column header. When two fields' labels find the same value ("Authorised
+  Signatory:" and "Client Authorised Signatory:"), the longer label decides.
+- **enabled**: set it to false to pause a field without deleting it.
+
+A value an admin listed beats any other detection of the same text. A CIN in your `COMPANY_CIN` terms becomes
+`<COMPANY_CIN>`, while any other CIN is still masked as `<IN_CIN>` by its format.
+
+A new service starts with these fields. Add your values to them, and add any further fields you need:
+
+| Field | Starts with labels |
+|---|---|
+| `COMPANY_NAME` | Company Name |
+| `COMPANY_CIN` | Company CIN |
+| `COMPANY_ADDRESS` | Company Address, Registered Office, Registered Address, Office Address |
+| `COMPANY_GSTIN` | Company GST, Company GSTIN, Company GST Number |
+| `COMPANY_PAN` | Company PAN |
+| `CLIENT_COMPANY_NAME` | Client Name, Client Company Name, Customer Name |
+| `CLIENT_CIN` | Client CIN |
+| `CLIENT_ADDRESS` | Client Address, Client Company Address, Billing Address |
+| `CLIENT_GSTIN` | Client GST, Client GSTIN, Client GST Number |
+| `CLIENT_PAN` | Client PAN |
+| `CLIENT_SIGNATORY` | Client Authorised Signatory, Client Authorized Signatory, Client Signatory |
+| `INTERNAL_SIGNATORY` | Authorised Signatory, Authorized Signatory, Signatory Name |
+
+Generic labels such as "CIN:", "GSTIN:" or "PAN:" don't say whose number it is. They are left to format detection
+(`IN_CIN`, `IN_GSTIN`, `IN_PAN`), which masks every such number. Listing a number as a term labels it as yours or the
+client's.
+
+```bash
+# your company's details
+curl -s localhost:8000/v1/admin/fields -H "X-API-Key: $ADMIN"            # find the field ids
+curl -s -X POST localhost:8000/v1/admin/fields/1/terms -H "X-API-Key: $ADMIN" -H "Content-Type: application/json" \
+  -d '{"add": ["Acme Technologies Pvt Ltd", "Acme Technologies"]}'
+
+# a field of your own
+curl -s -X POST localhost:8000/v1/admin/fields -H "X-API-Key: $ADMIN" -H "Content-Type: application/json" \
+  -d '{"name": "PROJECT_NAME", "terms": ["Project Falcon"], "labels": ["Project Name"]}'
+```
+
+**Client-specific values** often differ from one document to the next. Either keep a list of clients in
+`CLIENT_COMPANY_NAME` and the other client fields, or send this client's values with the request, which uses them
+for that request only:
+
+```json
+{"text": "...", "options": {"fields": [{"name": "CLIENT_COMPANY_NAME", "terms": ["Globex Corporation"]},
+                                       {"name": "CLIENT_SIGNATORY", "terms": ["Rahul Rao"]}]}}
+```
+
+For files, send the same JSON as the `options` form field.
+
+**Limits.**
+- An address or name split over several lines of a Word or PowerPoint file is matched line by line. Add each line as
+  a term, or use a label.
+- A signatory name on a line of its own under "Authorised Signatory" has no label beside it. List the names as terms,
+  or turn on `mask_names`.
+
+The settings file (`PII_SETTINGS_FILE`) can hold a `fields` list, which replaces the starter fields on first start.
+
 ## Settings and per-request options
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `enabled_types` | email, phone, card, US SSN, Aadhaar, PAN, IBAN | Types to detect (built-in and custom). |
+| `enabled_types` | email, phone, card, US SSN, Aadhaar, PAN, GSTIN, CIN, IBAN | Types to detect (built-in and custom). |
 | `threshold` | `40` | Minimum detector confidence in percent. Lower values catch more but give more false alarms. |
 | `mask_names` | `false` | Also detect people's names (`PERSON`). This is approximate. |
 | `keywords_enabled`, `sensitive_keywords` | on, `Salary, CTC, DOB, ...` | The value after a keyword becomes `SENSITIVE_VALUE`. After `:`, `=`, `\|` or ` - `, any value up to the end of the sentence or cell counts; otherwise only a value that starts with a number. A value is at most 120 characters. |
@@ -243,11 +319,12 @@ on the scan. `ocr_language` takes Tesseract codes such as `eng` or `eng+hin` (in
 | `allow_overrides` | `true` | Whether requests may send `options`. |
 | `ocr_enabled`, `ocr_language` | `true`, `eng` | OCR for scanned PDF pages. |
 
-A request's `options` can override `types`, `threshold`, `mask_names`, `keywords` and `allow_list`, for that request
-only:
+A request's `options` can override `types`, `threshold`, `mask_names`, `keywords` and `allow_list`, and add `fields`
+values, for that request only:
 
 ```json
-{"text": "...", "options": {"types": ["EMAIL_ADDRESS"], "threshold": 60, "keywords": ["Employee id"], "allow_list": ["hr@acme.com"]}}
+{"text": "...", "options": {"types": ["EMAIL_ADDRESS"], "threshold": 60, "keywords": ["Employee id"], "allow_list": ["hr@acme.com"],
+                            "fields": [{"name": "CLIENT_COMPANY_NAME", "terms": ["Globex Corporation"]}]}}
 ```
 
 Keyword matching depends on sentence and cell boundaries. In running text, end sentences with a full stop so that a
