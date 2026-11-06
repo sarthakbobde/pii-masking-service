@@ -30,15 +30,13 @@ def test_the_page_makes_no_unauthenticated_calls_to_admin_data(client):
 
 
 def test_protection_switch_passes_text_and_files_through(client, make_key):
-    h = make_key(["mask", "tokenise", "unmask"])
+    h = make_key(["mask"])
     text = f"Mail {EMAIL}"
     assert client.get("/healthz").json()["protection"] is True
     try:
         _put(client, protection_enabled=False)
         r = client.post("/v1/mask", headers=h, json={"text": text}).json()
         assert r["text"] == text and r["protection"] == "off" and r["total"] == 0
-        t = client.post("/v1/tokenise", headers=h, json={"text": text}).json()
-        assert t["text"] == text and t["protection"] == "off"
         f = client.post("/v1/files/mask", headers=h, files={"file": ("a.txt", text.encode())})
         assert f.content.decode() == text and f.headers["x-pii-protection"] == "off"
         assert client.get("/healthz").json()["protection"] is False
@@ -106,9 +104,6 @@ def test_check_with_extra_options_and_errors(client):
     assert client.post("/v1/admin/check", headers=ADMIN, files={"file": ("a.txt", b"x")}, data={"options": "[1]"}).status_code == 400
 
 
-def test_check_needs_admin_and_stores_nothing(client, make_key):
-    h = make_key(["mask", "tokenise", "unmask"])
+def test_check_needs_admin(client, make_key):
+    h = make_key(["mask"])
     assert client.post("/v1/admin/check", headers=h, files={"file": ("a.txt", b"x")}).status_code == 403
-    before = {s["scope"]: s["total"] for s in client.get("/v1/admin/vault", headers=ADMIN).json()}
-    client.post("/v1/admin/check", headers=ADMIN, files={"file": ("a.txt", f"Mail {EMAIL}".encode())})
-    assert {s["scope"]: s["total"] for s in client.get("/v1/admin/vault", headers=ADMIN).json()} == before

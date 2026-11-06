@@ -6,7 +6,7 @@
 * Sensitive keywords: when a listed keyword appears ("Salary: 12,40,000", "DOB 12/03/1990", a "Salary | 12,40,000"
   table row), the value that follows it is personal data whatever its format. After `:`, `=`, `|` or ` - ` any value up
   to the end of the sentence or cell counts; otherwise only a value that starts with a number. At most 120 characters.
-* Text that is already masked (`<EMAIL_ADDRESS>`, `<EMAIL_ADDRESS_7f3a9c21>`) is never masked again.
+* Text that is already masked (`<EMAIL_ADDRESS>`) is never masked again.
 
 Nothing here logs a value. Errors propagate: callers fail closed.
 """
@@ -28,8 +28,7 @@ TERM_SCORE = 1.0          # a value an admin listed is certain, so it wins over 
 MAX_VALUE = 120
 MAX_COMPILED = 512
 _PAN_SHAPE = re.compile(r"[A-Za-z]{5}\d{4}[A-Za-z]")
-TOKEN_RE = re.compile(r"<(([A-Z][A-Z0-9_]*?)_[0-9a-f]{8,64})>")            # group 1: the token, group 2: its type
-PLACEHOLDER_RE = re.compile(r"<[A-Z][A-Z0-9_]*(?:_[0-9a-f]{8,64})?>")    # a token or a plain label such as <EMAIL_ADDRESS>
+PLACEHOLDER_RE = re.compile(r"<[A-Z][A-Z0-9_]*>")                          # an already-masked label such as <EMAIL_ADDRESS>
 
 _engine_lock = threading.Lock()
 _sync_lock = threading.Lock()

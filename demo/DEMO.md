@@ -30,16 +30,16 @@ Run `python demo/run_demo.py`. It pauses before each step; press Enter to run it
 | # | Show | Say |
 |---|---|---|
 | 1 | **Health check** | "A plain HTTP service. No key is needed to check that it is up; everything else needs a key." |
-| 2 | **Two API keys** are created: `billing-app` (mask and tokenise) and `support-desk` (unmask only) | "Each calling system gets its own key and its own permissions. We store only a hash of each key, so even the database can't leak one." |
+| 2 | **An API key** is created. A second key with only the admin permission is created to show refusals. | "Each calling system gets its own key and its own permissions. We store only a hash of each key, so even the database can't leak one." |
 | 3 | **Mask text**. Email, phone, PAN and the salary after "Salary:" become `<EMAIL_ADDRESS>`, `<PHONE_NUMBER>` and so on. | "It's one-way. The response says what kinds of data it found and where, but never the values themselves. Notice it caught the salary from the keyword, not from a pattern." |
-| 4 | **Tokenise**. The same text now has tokens like `<EMAIL_ADDRESS_afe13b4b>`. A second message with the same email, in capitals, gets the **same token**. | "Use this when you still need to tell values apart, for analytics or for an LLM to reason about the same customer, without seeing the data. The real values are kept encrypted." |
-| 5 | **Unmask**: `support-desk` gets the original text back. `billing-app` gets **403**, and a call with no key gets **401**. | "Getting values back is a separate, restricted permission, so only the systems that need it can do it." |
+| 4 | **Permissions**: a key without `mask` gets **403**, no key gets **401**, and asking to unmask gets **404**. | "This service can only mask. There is no endpoint, key or setting that puts a hidden value back, so a leak of this service cannot leak the originals." |
+| 5 | **CMS contract masking** (specification A.8): submit, status, download. Open `demo/files/service-agreement.docx` next to `demo/output/ACME_MSA_20.docx`. | "CMS sends the file with the contract id and version and gets the masked file back in the same format, with the headers the specification lists. The original is never stored; the masked copy waits for download and then expires. Errors use the specification's format and codes." |
 | 6 | **Word**: open `offer-letter.docx`, then `demo/output/offer-letter.masked.docx` | "The same file comes back, with the bold, colours and table style kept. The header, the table and the author property are cleaned too. In the table, the Date of birth, Bank account and Home address values are masked because of their labels in the next column." |
 | 7 | **PDF**: open `customer-complaint.pdf`, then `demo/output/customer-complaint.masked.pdf`. **Try to select or copy where the email was.** | "This is true redaction. The text is removed from the file, not covered with a black box. The script just checked that the email can't be extracted from the file. The link over it and the document metadata are gone too." |
 | 8 | **Excel**: open `staff-list.xlsx`, then `demo/output/staff-list.masked.xlsx` | "Spreadsheets are handled cell by cell. The DOB and Salary columns are masked because of their headers, even though they're plain numbers and dates. Headers and other columns stay readable." |
 | 9 | **Live configuration**: the admin adds a `CASE_REF` type (`CX-12345`) and the same text is masked again | "Each team can add its own identifiers. A new type takes effect on the next request, with no redeploy." |
 | 10 | **Fields: company and client details**. The script lists the dictionary: 12 fields such as `COMPANY_NAME`, `COMPANY_CIN`, `CLIENT_COMPANY_NAME` and `CLIENT_SIGNATORY`. It stores our company's details once, sends this client's details with the request, and masks `service-agreement.docx`. Open the original next to `demo/output/service-agreement.masked.docx`. | "Our own company's name, CIN, GSTIN, PAN, address and signatory are kept in a dictionary and hidden wherever they appear, even when written differently ('ACME ANALYTICS PVT. LTD.'). Client details can be stored too, or sent with each document. Labels do the rest: whatever follows 'Client Name:' or sits in the cell next to 'Billing Address' is hidden as that field. Anyone with admin rights can add a field, such as `PROJECT_NAME`, with one API call. Any CIN or GSTIN we don't know is still caught by its format." |
-| 11 | **Audit log** | "Every call is logged: which system, what operation, which scope and how many items of each type. It never records the data itself, so the log is safe to keep." |
+| 11 | **Audit log** | "Every call is logged: which system, what operation and how many items of each type. It never records the data itself, so the log is safe to keep." |
 
 ### Doing it in the browser instead (optional, for a hands-on feel)
 1. Open http://127.0.0.1:8010/docs.
@@ -51,8 +51,8 @@ Run `python demo/run_demo.py`. It pauses before each step; press Enter to run it
 ## Talking points
 
 - **Fails closed:** if detection breaks, the caller gets an error, never a half-masked document.
-- **Data handling:** values are never logged, never stored in plain text, and returned only by unmask.
-- **Scopes:** each team or app can have its own token namespace, so tokens from one scope can't be unmasked in another.
+- **Data handling:** values are never logged and never stored. Masking is one-way, so nothing can restore them.
+- **CMS API:** `POST /api/v1/documents/mask` with the contract id and version, then status and download, as in the specification (A.8).
 - **Rate limits:** each key has its own rate limit.
 - **Deployment:** it runs as a Docker container with its own settings, separate from any other app.
 - **Detected out of the box:** email, phone, cards, Aadhaar (checksum-validated), PAN, GSTIN, CIN, IBAN, US SSN, IP
@@ -68,7 +68,7 @@ Run `python demo/run_demo.py`. It pauses before each step; press Enter to run it
 | Names of people? | Off by default, because names are often needed and detection is approximate. Turn on `mask_names` in settings, or per request. |
 | Images, charts, SmartArt? | Text inside images on normal pages, charts and SmartArt isn't masked. Text, tables, headers, notes and comments are. |
 | Old `.doc` files or Google Docs? | Convert to `.docx` or PDF first. |
-| Can a tokenised PDF be restored? | No. The PDF text is removed for real. Word, PowerPoint, Excel and text files can be restored with unmask. |
+| Can a masked document be restored? | No. This service can only mask: there is no unmask endpoint, no token vault and no key to put values back. Keep the original in CMS. |
 | Why was "Rohan Sharma" or "Asha Verma" not masked? | Names are off by default (see above). |
 | Why was `hr@example.com` not masked? | It's on the allow-list: shared contact details that are fine to keep. |
 | How does it know whose CIN or GSTIN it is? | From the dictionary: our own numbers are stored as `COMPANY_*` values, and the client's are stored or sent with the request. A number it doesn't know is still masked as `IN_CIN` or `IN_GSTIN`, just without saying whose it is. |

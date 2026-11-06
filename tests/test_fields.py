@@ -88,14 +88,6 @@ def test_request_fields_add_values_for_one_call(client, make_key):
     assert client.post("/v1/mask", headers=h, json={"text": text, "options": {"fields": [{"name": "PERSON"}]}}).status_code == 400
 
 
-def test_field_values_tokenise_and_unmask(client, make_key):
-    h = make_key(["tokenise", "unmask"])
-    fid = _field(client, "CLIENT_COMPANY_NAME")["id"]
-    client.post(f"/v1/admin/fields/{fid}/terms", headers=ADMIN, json={"add": ["Globex Corporation"]})
-    t = client.post("/v1/tokenise", headers=h, json={"text": "Signed with Globex Corporation."}).json()
-    assert t["text"].startswith("Signed with <CLIENT_COMPANY_NAME_")
-    assert client.post("/v1/unmask", headers=h, json={"text": t["text"]}).json()["text"] == "Signed with Globex Corporation."
-
 
 def test_field_labels_in_word_tables_and_spreadsheets(client, make_key):
     import docx

@@ -3,8 +3,8 @@
     python demo/run_demo.py                      # http://127.0.0.1:8010, press Enter between steps
     python demo/run_demo.py --url http://127.0.0.1:8000 --auto
 
-Uses the admin key from .env (PII_BOOTSTRAP_ADMIN_KEY) to create two demo keys, then shows masking, tokenising,
-unmasking, permissions, files, a custom type added live and the audit log. Masked files go to demo/output/.
+Uses the admin key from .env (PII_BOOTSTRAP_ADMIN_KEY) to create a demo key, then shows masking, permissions, the CMS
+document API (submit, status, download), files, fields and a custom type added live, and the audit log. Masked files go to demo/output/.
 """
 import argparse
 import json
@@ -66,12 +66,12 @@ class Demo:
         print("  " + json.dumps(body, indent=2, default=str).replace("\n", "\n  "))
         return body
 
-    def key(self, name: str, permissions: list, scopes: list) -> dict:
+    def key(self, name: str, permissions: list) -> dict:
         r = self.http.post("/v1/admin/keys", headers=self.admin,
-                           json={"name": f"{name}-{int(time.time())}", "permissions": permissions, "scopes": scopes})
+                           json={"name": f"{name}-{int(time.time())}", "permissions": permissions})
         r.raise_for_status()
         info = r.json()
-        print(f"  created key '{info['name']}'  permissions={info['permissions']}  scopes={info['scopes']}  "
+        print(f"  created key '{info['name']}'  permissions={info['permissions']}  "
               f"(key starts {info['key'][:12]}..., shown once, stored only as a hash)")
         return {"X-API-Key": info["key"]}
 
@@ -93,25 +93,41 @@ class Demo:
         self.step("Health check", "no key needed; shows the detector, database and vault are ready")
         self.show(self.http.get("/healthz"))
 
-        self.step("Create two API keys", "one for an app that masks and tokenises, one for a support desk that may unmask")
-        app = self.key("billing-app", ["mask", "tokenise"], ["demo"])
-        desk = self.key("support-desk", ["unmask"], ["demo"])
+        self.step("Create an API key", "one key per calling system; this one may only use the masking API")
+        app = self.key("cms-app", ["mask"])
+        nobody = self.key("read-only-admin", ["admin"])
 
         self.step("Mask text (one-way)", "labels replace the values; findings give type and position, never the value")
         print(f"  input: {TEXT}")
         self.show(self.http.post("/v1/mask", headers=app, json={"text": TEXT}), ["text", "counts", "total"])
 
-        self.step("Tokenise text (reversible)", "same value -> same token every time in this scope; the value is stored encrypted")
-        t = self.show(self.http.post("/v1/tokenise", headers=app, json={"text": TEXT}), ["text", "scope", "total"])
-        again = self.http.post("/v1/tokenise", headers=app, json={"text": "Second email from ROHAN.SHARMA@gmail.com"}).json()
-        print(f"  a later text with the same email: {again['text']}")
-
-        self.step("Unmask: only keys allowed to", "the support desk gets the values back; the billing app is refused")
-        self.show(self.http.post("/v1/unmask", headers=desk, json={"text": t["text"]}), ["text", "total"])
-        r = self.http.post("/v1/unmask", headers=app, json={"text": t["text"]})
-        print(f"  billing-app tries to unmask -> HTTP {r.status_code}: {r.json()['detail']}")
+        self.step("Permissions", "a key can only do what it was given; there is no way to restore a masked value")
+        r = self.http.post("/v1/mask", headers=nobody, json={"text": TEXT})
+        print(f"  a key without the mask permission -> HTTP {r.status_code}: {r.json()['detail']}")
         r = self.http.post("/v1/mask", json={"text": TEXT})
-        print(f"  no key at all              -> HTTP {r.status_code}: {r.json()['detail']}")
+        print(f"  no key at all                     -> HTTP {r.status_code}: {r.json()['detail']}")
+        r = self.http.post("/v1/unmask", headers=app, json={"text": TEXT})
+        print(f"  asking to unmask                  -> HTTP {r.status_code} (the endpoint does not exist)")
+
+        self.step("CMS: mask a contract (specification A.8)",
+                  "CMS sends the file with its contract id and version; ContractAI returns the masked file")
+        data = {"contract_id": "CMS-CONTRACT-12345", "version": "2.0", "output_filename": "ACME_MSA_20.docx"}
+        r = self.http.post("/api/v1/documents/mask", headers=app, data=data,
+                           files={"file": ("ACME_MSA_2026.docx", (HERE / "files" / "service-agreement.docx").read_bytes())})
+        job = r.json()
+        print(f"  POST /api/v1/documents/mask -> HTTP {r.status_code}")
+        print("  " + json.dumps({k: job[k] for k in ("job_id", "status", "output_filename", "masked_fields_count", "field_types")}, indent=2).replace("\n", "\n  "))
+        st = self.http.get(f"/api/v1/documents/mask/{job['job_id']}/status", headers=app)
+        print(f"  GET .../status             -> HTTP {st.status_code}, status {st.json()['status']}")
+        dl = self.http.get(f"/api/v1/documents/mask/{job['job_id']}/download", headers=app)
+        out = HERE / "output" / job["output_filename"]
+        out.write_bytes(dl.content)
+        print(f"  GET .../download           -> HTTP {dl.status_code}, saved {out.relative_to(ROOT)}")
+        for h in ("content-disposition", "x-contract-id", "x-version", "x-original-filename", "x-masked-fields-count"):
+            print(f"      {h}: {dl.headers[h]}")
+        bad = self.http.post("/api/v1/documents/mask", headers=app, data={"contract_id": "C-1"},
+                             files={"file": ("sheet.xlsx", b"x")})
+        print(f"  a missing version / wrong type -> HTTP {bad.status_code}: {bad.json()}")
 
         self.step("Mask a Word document", "same .docx back: formatting kept; header, table and properties cleaned")
         self.file(app, "mask", "offer-letter.docx")
@@ -151,7 +167,7 @@ class Demo:
                 print("  | " + p.text)
         print("  table: " + "; ".join(f"{r.cells[0].text} = {r.cells[1].text}" for r in d.tables[0].rows))
 
-        self.step("Audit log", "every call: who, what, scope, status, counts by type; never a value")
+        self.step("Audit log", "every call: who, what, status, counts by type; never a value")
         for e in self.http.get("/v1/admin/audit", headers=self.admin, params={"limit": 8}).json():
             print(f"  {e['at'][11:19]}  {e['key']:<28} {e['operation']:<22} {e['status']}  {e['counts']}")
 

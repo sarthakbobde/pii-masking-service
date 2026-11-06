@@ -15,6 +15,7 @@ FROM base AS test
 COPY requirements-dev.txt .
 RUN pip install -r requirements-dev.txt
 COPY tests ./tests
+COPY settings.example.json .
 RUN python -m pytest -q
 
 FROM base AS runtime

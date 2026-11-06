@@ -1,35 +1,38 @@
-# PII masking service
+# PII masking service (masking only)
 
-A standalone HTTP API that finds personal data in text and files and either **masks** it (one-way labels such as
-`<EMAIL_ADDRESS>`) or **tokenises** it (reversible tokens such as `<EMAIL_ADDRESS_7f3a9c21>`, with the real value kept
-encrypted in a vault, which callers with the `unmask` permission can restore). Files come back in the same format: PDF, DOCX,
-PPTX, XLSX, CSV, TXT and Markdown.
+A standalone HTTP API that finds personal data in text and documents and **masks** it: values are replaced by labels such
+as `<EMAIL_ADDRESS>`, in the same file format. **Masking is one-way.** This branch has no unmask or decrypt endpoint, no
+reversible tokens and no vault, so the original values are not kept anywhere and nothing can put them back.
+
+It includes the document-masking API from the *ContractAI and CMS Integration API Specification* (section A.8), plus a
+general text and file API and an admin page for configuring what to hide.
 
 Detection uses Microsoft Presidio with spaCy (`en_core_web_sm`). It covers:
 - **built-in types**: email, phone, cards, SSN, Aadhaar, PAN, GSTIN, CIN, IBAN and more;
 - **regular-expression types** you define;
-- **a dictionary of fields** you maintain: known values such as your company's or a client's name, address or
-  signatory, and labels such as "Client Name:" whose value is masked as that field;
+- **a dictionary of fields** you maintain: known values such as your company's or a client's name, address or signatory,
+  and labels such as "Client Name:" whose value is masked as that field;
 - **sensitive keywords**: the value after "Salary:", "DOB" and similar keywords is masked whatever its format.
 
 ---
 
 ## Contents
-- [Quick start (local)](#quick-start-local)
-- [Quick start (Docker)](#quick-start-docker)
+- [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [API keys](#api-keys)
+- [CMS API: mask a document](#cms-api-mask-a-document)
+- [Text and file masking](#text-and-file-masking)
 - [The admin page](#the-admin-page)
-- [Endpoints](#endpoints)
-- [Files: what is covered](#files-what-is-covered)
+- [Admin API](#admin-api)
 - [Fields: the dictionary of values to hide](#fields-the-dictionary-of-values-to-hide)
 - [Settings and per-request options](#settings-and-per-request-options)
-- [Security notes](#security-notes)
+- [What is covered in each file type](#what-is-covered-in-each-file-type)
+- [Security and deployment notes](#security-and-deployment-notes)
 - [Tests](#tests)
 
 ---
 
-## Quick start (local)
+## Quick start
 
 Requires Python 3.11.
 
@@ -41,12 +44,7 @@ pip install -r requirements-dev.txt
 
 Create a `.env` (see `.env.example`):
 
-```bash
-python -m app.cli master-key      # paste the output into PII_MASTER_KEY
 ```
-
-```
-PII_MASTER_KEY=<the key printed above>
 PII_BOOTSTRAP_ADMIN_KEY=<any random string of 24+ characters>
 ```
 
@@ -56,18 +54,18 @@ Run it:
 uvicorn app.main:app --port 8000
 ```
 
-The detector loads in the background at start-up (about 10 to 20 s). `GET /healthz` reports `starting` until it is
-ready, and requests made before then wait for it. Interactive docs are at http://localhost:8000/docs.
+The detector loads in the background at start-up (about 10 to 20 s). `GET /healthz` reports `starting` until it is ready.
+Interactive API docs are at http://localhost:8000/docs and the admin page is at http://localhost:8000/admin.
 
-## Quick start (Docker)
+With Docker:
 
 ```bash
-cp .env.example .env              # fill in PII_MASTER_KEY and PII_BOOTSTRAP_ADMIN_KEY
+cp .env.example .env              # set PII_BOOTSTRAP_ADMIN_KEY
 docker compose up -d --build
 ```
 
-The image includes English OCR data for scanned PDFs, runs as a non-root user and keeps its SQLite database in the
-`pii-data` volume. To run the test suite inside the image (OCR test included), use `docker build --target test .`.
+The image includes English OCR data for scanned PDFs, runs as a non-root user and keeps its SQLite database in the `pii-data`
+volume. `docker build --target test .` runs the test suite inside the image.
 
 ## Configuration
 
@@ -75,70 +73,129 @@ Environment variables (or `.env`):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PII_MASTER_KEY` | (none) | Fernet key that encrypts vault values and the token secret. **Required for tokenise/unmask.** Comma-separate several keys to rotate (newest first; old ones still decrypt). Losing it makes the vault unreadable. |
-| `PII_BOOTSTRAP_ADMIN_KEY` | (none) | Created as an admin key (all permissions, any scope) on start if no key with this value exists. Remove it once you have created your own keys. |
+| `PII_BOOTSTRAP_ADMIN_KEY` | (none) | Created as an admin key on start if no key with this value exists. Remove it once you have created your own keys. |
 | `PII_DATABASE_URL` | `sqlite:///./data/pii.db` | Any SQLAlchemy URL. For PostgreSQL, install a driver (`psycopg`) and use `postgresql+psycopg://...`. |
-| `PII_SETTINGS_FILE` | (none) | JSON that seeds the settings on **first** start; see `settings.example.json`. After that, use the admin API. |
-| `PII_MAX_TEXT_CHARS` | `200000` | Longest text accepted by the text endpoints. |
-| `PII_MAX_UPLOAD_MB` | `20` | Largest file accepted. |
+| `PII_SETTINGS_FILE` | (none) | JSON that seeds the settings and fields on **first** start; see `settings.example.json`. |
+| `PII_MAX_UPLOAD_MB` | `50` | Largest document accepted (the specification's limit is 50 MB). |
+| `PII_MAX_TEXT_CHARS` | `200000` | Longest text accepted by `/v1/mask`. |
+| `PII_JOB_TTL_MINUTES` | `60` | How long a masked CMS document waits to be downloaded. |
+| `PII_JOB_MAX_MB` | `500` | Total size of masked documents held at once; the oldest go first. |
 | `PII_DEFAULT_RATE_LIMIT` | `120` | Requests per minute for keys created without their own limit. |
 | `PII_WARM_UP` | `true` | Load the detector at start-up rather than on the first request. |
-| `PII_TESSDATA_DIR` | (auto) | Tesseract language data for OCR. Without it, PyMuPDF looks at `TESSDATA_PREFIX` or an installed Tesseract. |
+| `PII_TESSDATA_DIR` | (auto) | Tesseract language data for OCR of scanned PDFs. |
 | `PII_LOG_LEVEL` | `INFO` | |
 
 ## API keys
 
-Every endpoint except `/healthz` needs a key, sent as `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+Every endpoint except `/healthz` and the admin page itself needs a key, sent as `Authorization: Bearer <key>` or
+`X-API-Key: <key>`.
 
-- Keys are stored as SHA-256 hashes. The key itself is shown **once**, in the response that creates it.
-- **Permissions**: `mask`, `tokenise`, `unmask`, `admin`. Give `unmask` only to the services that really need values back.
-- **Scopes** are namespaces for tokens and the vault, for example one per team or application. The same value gets
-  a different token in each scope, and unmasking only works in the scope that tokenised it. A key's first scope is
-  its default; a request may name another scope (`"scope": "..."`) if the key lists it. `"*"` allows any scope, but
-  then every request must name one.
-- **Rate limit**: requests per minute per key (sliding window, kept in memory per process). Over the limit you get
-  `429` with `Retry-After`.
-- Every call is written to the audit log: time, key, operation, scope, HTTP status, counts by type and duration.
-  Values are never logged.
-
-Create keys through the admin API (below) or the command line:
+- Keys are stored as SHA-256 hashes. The key is shown **once**, in the response that creates it.
+- **Permissions**: `mask` (use the masking API) and `admin` (manage settings, fields, keys and the audit log).
+- **Rate limit**: requests per minute per key (sliding window, in memory per process). Over the limit you get `429` with
+  `Retry-After`.
+- Every call is written to the audit log: time, key, operation, HTTP status, counts by type, and for the CMS API the
+  contract id. Values are never logged.
 
 ```bash
-python -m app.cli create-key billing-svc --permissions mask,tokenise --scopes billing --rate-limit 300
-python -m app.cli create-key support-desk --permissions unmask --scopes billing
+python -m app.cli create-key cms-integration --permissions mask --rate-limit 300
 python -m app.cli list-keys
 python -m app.cli revoke-key 3
 ```
 
-## The admin page
+The specification lists no authentication for A.8 (it shows a JWT only for the combine API in A.7), so this service uses
+API keys. If CMS must send a JWT instead, that is a small change to the `require` dependency in `app/main.py`.
 
-Open **`/admin`** (for example http://localhost:8000/admin) and sign in with a key that has the `admin` permission. The
-key stays in the browser tab only and is cleared when the tab closes. The page is plain HTML, CSS and JavaScript served by
-the service itself, with a strict content security policy. It needs nothing else installed.
+## CMS API: mask a document
 
-| Screen | What an admin can do |
+Implements specification section A.8. CMS sends a `.docx` or `.pdf` with its contract id and version; the service masks the
+sensitive fields defined in the [fields dictionary](#fields-the-dictionary-of-values-to-hide) and returns the masked file
+in the same format. **The original file is not stored.** Only the masked result is held, in memory, until it is downloaded
+or expires.
+
+### `POST /api/v1/documents/mask`
+
+`multipart/form-data`:
+
+| Field | Required | Description |
+|---|---|---|
+| `file` | Yes | The document: `.docx` or `.pdf`, up to 50 MB |
+| `contract_id` | Yes | CMS contract the file belongs to |
+| `version` | Yes | Contract version the file belongs to |
+| `output_filename` | No | Name of the masked file. Defaults to `<original_filename>_Masked.<ext>` |
+
+```bash
+curl -s localhost:8000/api/v1/documents/mask -H "Authorization: Bearer $KEY" \
+  -F file=@ACME_MSA_2026.docx -F contract_id=CMS-CONTRACT-12345 -F version=2.0 -F output_filename=ACME_MSA_20.docx
+```
+
+The masking is done before the answer is sent, so the job is already complete:
+
+```json
+{
+  "job_id": "mask-2c8f3a56afdb", "contract_id": "CMS-CONTRACT-12345", "version": "2.0", "status": "completed",
+  "original_filename": "ACME_MSA_2026.docx", "output_filename": "ACME_MSA_20.docx",
+  "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "file_size_bytes": 38112,
+  "masked_fields_count": 12, "field_types": {"CLIENT_COMPANY_NAME": 4, "COMPANY_NAME": 4, "IN_GSTIN": 2, "IN_PAN": 2},
+  "pages": null, "unprocessed_pages": [], "ocr_pages": [],
+  "created_at": "2026-11-05T09:20:00Z", "completed_at": "2026-11-05T09:20:02Z",
+  "download_url": "/api/v1/documents/mask/mask-2c8f3a56afdb/download", "error_message": null, "error_code": null
+}
+```
+
+### `GET /api/v1/documents/mask/{job_id}/status`
+
+The same JSON: the status and the masking summary (counts and field types). Never any value.
+
+### `GET /api/v1/documents/mask/{job_id}/download`
+
+The masked file as binary content, in the format that was uploaded.
+
+| Header | Value |
 |---|---|
-| **Overview** | See the **PII protection switch**, requests and values hidden in the last 24 hours, the most hidden types, system health (detector, database, vault, OCR), and recent activity. |
-| **Fields to hide** | Add, edit, pause and delete [fields](#fields-the-dictionary-of-values-to-hide): the labels that introduce a value and the known values to hide. Paste values one per line. |
-| **Detection settings** | Switch each kind of data on or off (21 built in, plus your own regex types with a pattern tester), set the confidence threshold, names, sensitive keywords, the allow-list, document-property removal, OCR, and whether callers may override settings. Save and discard are at the bottom. |
-| **API keys** | Create keys (shown once, with a copy button), change permissions, scopes and rate limits, and revoke. |
-| **Audit log** | Filter by caller or operation. Counts only, never values. |
-| **Token vault** | See how many values each scope stores, and delete a scope's values. |
-| **Check a document** | Add a PDF, Word, PowerPoint, Excel, CSV or text file and see what would be hidden: counts by kind, a text preview with the hidden values highlighted, and a download of the masked file. Nothing is stored. |
-| **Try it** | Run sample text or a file through mask, tokenise or unmask with optional per-request options. |
+| `Content-Disposition` | `attachment; filename="ACME_MSA_20.docx"` |
+| `X-Contract-Id` | `CMS-CONTRACT-12345` |
+| `X-Version` | `2.0` |
+| `X-Original-Filename` | `ACME_MSA_2026.docx` (percent-encoded if it has non-ASCII characters) |
+| `X-Masked-Fields-Count` | `12` |
 
-**PII protection switch.** Turning it off (a confirmation is required) makes `mask` and `tokenise` return text and files
-**unchanged**: nothing is detected or stored, and the response says so (`"protection": "off"`, header
-`X-PII-Protection: off`). `unmask` still works. Use it for testing or an emergency. The state is shown in the page's top bar,
-in `GET /healthz` and in `GET /v1/admin/overview`.
+A job can be read only by the key that made it, and can be downloaded any number of times until it expires.
 
-## Endpoints
+### Errors
 
-In the examples, `$KEY` is an API key with the needed permission.
+Under `/api/v1/` every error has the specification's format:
+
+```json
+{"error": {"code": "VALIDATION_ERROR", "message": "version is required", "details": null}}
+```
+
+| HTTP | `code` | When |
+|---|---|---|
+| 400 | `VALIDATION_ERROR` | `contract_id` or `version` missing or malformed, or no file attached |
+| 400 | `EMPTY_FILE` | The file has zero bytes |
+| 400 | `UNSUPPORTED_MEDIA_TYPE` | Not `.docx` or `.pdf` |
+| 413 | `PAYLOAD_TOO_LARGE` | Over the size limit |
+| 422 | `UNREADABLE_DOCUMENT` | Corrupt, password protected, or no extractable text |
+| 500 | `MASKING_FAILED` | Masking could not be completed. **No file is returned** |
+| 500 | `INTERNAL_ERROR` | Unexpected failure |
+| 503 | `SERVICE_UNAVAILABLE` | The detector is not available |
+| 404 | `JOB_NOT_FOUND` | No such job, it belongs to another key, or it has expired |
+| 401, 403, 429 | `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED` | Key missing or unknown, key lacks the `mask` permission, rate limit reached (with `Retry-After`) |
+
+Not in the specification, and worth knowing:
+- **Fails closed.** If detection breaks, CMS gets `MASKING_FAILED` and no file, never a partly masked one.
+- **Scanned PDF pages.** A page that is only an image is read with OCR when Tesseract language data is installed. Without
+  it the page is left as it is and listed in `unprocessed_pages`. A PDF with no readable text at all is refused as
+  `UNREADABLE_DOCUMENT`. Check `unprocessed_pages` if your PDFs can contain scans.
+- **Jobs live in memory.** A restart drops them (CMS submits again), and with several workers or replicas the status and
+  download calls must reach the worker that took the upload. Use session affinity, or run one worker.
+- **PII protection switch.** If an admin has switched protection off, the file comes back unchanged and the response says
+  `"protection": "off"` (header `X-PII-Protection: off`).
+- Section A.7 (combining supporting documents into one PDF) is a separate service and is not part of this one.
+
+## Text and file masking
 
 ### `POST /v1/mask` (permission `mask`)
-
-One-way: replaces personal data with `<TYPE>` labels.
 
 ```bash
 curl -s localhost:8000/v1/mask -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
@@ -158,124 +215,76 @@ curl -s localhost:8000/v1/mask -H "Authorization: Bearer $KEY" -H "Content-Type:
 }
 ```
 
-`start` and `end` are offsets in the **input** text. Responses never echo the values themselves. Optional body fields
-are `scope` and `options` ([per-request options](#settings-and-per-request-options)).
+`start` and `end` are offsets in the **input** text. Responses never echo the values. An optional `options` object overrides
+[settings](#settings-and-per-request-options) for the one request.
 
-### `POST /v1/tokenise` (permission `tokenise`)
+### `POST /v1/files/mask` (permission `mask`)
 
-The request body is the same as for mask. Each value becomes a token: `TYPE_` plus the first 8 hex digits of
-HMAC-SHA256(secret, scope, type, value), compared case-insensitively. The same value always gets the same token in a
-scope, so you can still tell that two texts mention the same person. The value is stored encrypted in the vault. The
-response also includes `scope`.
-
-```json
-{"text": "Mail <EMAIL_ADDRESS_25639bd5> or call <PHONE_NUMBER_d89e22bb>. ...", "scope": "billing", ...}
-```
-
-### `POST /v1/unmask` (permission `unmask`)
+Multipart `file` (and optional `options` as a JSON string). The response is the masked file, of the same type (PDF, DOCX,
+PPTX, XLSX, CSV, TXT, Markdown), named `<name>.masked.<ext>`. What was found is in the `X-PII-Summary` header.
 
 ```bash
-curl -s localhost:8000/v1/unmask -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"text": "Mail <EMAIL_ADDRESS_25639bd5>", "scope": "billing"}'
+curl -s localhost:8000/v1/files/mask -H "Authorization: Bearer $KEY" -F file=@report.pdf -D headers.txt -o report.masked.pdf
 ```
-
-```json
-{"text": "Mail john.doe@acme.com", "scope": "billing", "counts": {"EMAIL_ADDRESS": 1}, "total": 1, "unknown_tokens": 0}
-```
-
-Tokens the scope does not hold are left as they are and counted in `unknown_tokens`.
-
-### Files: `POST /v1/files/mask`, `/v1/files/tokenise` and `/v1/files/unmask`
-
-These endpoints take a multipart upload with the fields `file`, plus optional `scope` and `options` (a JSON string).
-The response is the processed file, of the same type, named `<name>.masked.<ext>` (or `.tokenised` / `.unmasked`).
-What was found is in the `X-PII-Summary` response header.
-
-```bash
-curl -s localhost:8000/v1/files/mask -H "Authorization: Bearer $KEY" \
-  -F file=@contract.pdf -F 'options={"keywords":["Salary","Employee id"]}' \
-  -D headers.txt -o contract.masked.pdf
-```
-
-```
-X-PII-Summary: {"counts":{"EMAIL_ADDRESS":3,"SENSITIVE_VALUE":1},"total":4,"file_type":"pdf","pages":5,"ocr_pages":[4],"unprocessed_image_pages":[],"ocr_available":true}
-```
-
-`/v1/files/unmask` restores tokenised DOCX, PPTX, XLSX, CSV, TXT and MD files. It cannot restore PDFs, because
-tokenising removes the original text from the PDF (the request gets `415`).
-
-### Admin (permission `admin`)
-
-| Method and path | Purpose |
-|---|---|
-| `GET /v1/admin/overview` | Health, protection switch, counts and the last 24 hours (what the Overview screen shows). |
-| `POST /v1/admin/check` | Multipart `file` (and optional `options`): what would be hidden, a text preview of the masked result and the masked file (base64, up to 8 MB). Stores nothing. |
-| `GET /v1/admin/settings` | The settings in force, plus the known built-in and custom types. |
-| `PUT /v1/admin/settings` | Change some or all settings (partial JSON). |
-| `GET /v1/admin/custom-types`, `POST` the same path | List or add regex types: `{"name": "EMPLOYEE_ID", "pattern": "\\bEMP-\\d{5}\\b", "context": ["employee"], "confidence": 85}`. A new type is enabled straight away. |
-| `PUT` or `DELETE /v1/admin/custom-types/{id}` | Change or delete a type. A rename carries over to the enabled list. |
-| `POST /v1/admin/custom-types/test` | `{"pattern": "...", "text": "sample"}` shows what the pattern matches (at most 20 matches). |
-| `GET /v1/admin/fields`, `POST` the same path | List the dictionary, or add a field: `{"name", "description", "terms", "labels", "enabled"}` ([fields](#fields-the-dictionary-of-values-to-hide)). |
-| `PATCH /v1/admin/fields/{id}` | Change a field. `terms` or `labels` given replace the old lists; `{"enabled": false}` pauses it. |
-| `POST /v1/admin/fields/{id}/terms` | `{"add": [...], "remove": [...]}` adds values to a field or takes some out. |
-| `DELETE /v1/admin/fields/{id}` | Delete a field. |
-| `GET /v1/admin/keys`, `POST` the same path | List keys (never the key itself) or create one: `{"name", "permissions", "scopes", "rate_limit"}`. The answer holds `key`, shown only once. |
-| `PATCH /v1/admin/keys/{id}` | Change `permissions`, `scopes` or `rate_limit`. |
-| `DELETE /v1/admin/keys/{id}` | Revoke a key. It stops working within 5 seconds. |
-| `GET /v1/admin/audit?key=&operation=&since=&limit=` | Recent audit entries, newest first. |
-| `GET /v1/admin/vault` | How many values each scope holds, by type. |
-| `DELETE /v1/admin/vault/{scope}` | Delete every value of a scope. Its tokens can no longer be unmasked. |
 
 ### `GET /healthz` (no key)
 
 ```json
-{"status": "ok", "version": "0.1.0", "detector": "ready", "database": true, "vault": true, "ocr": true}
+{"status": "ok", "version": "0.1.0", "detector": "ready", "database": true, "ocr": true, "protection": true}
 ```
 
 `status` is `starting` while the detector loads, and `error` (HTTP 503) if the detector or database fails.
 
-### Errors
+## The admin page
 
-| Code | When |
+Open **`/admin`** and sign in with a key that has the `admin` permission. The key stays in the browser tab only. It is plain
+HTML, CSS and JavaScript served by the service, with a strict content security policy.
+
+| Screen | What an admin can do |
 |---|---|
-| 400 | Invalid input or options. |
-| 401 | Missing or unknown key. |
-| 403 | The key lacks the permission or the scope, or per-request options are switched off. |
-| 413 | The text or file is too large. |
-| 415 | Unsupported or mismatched file type, an encrypted PDF, or unmasking a PDF. |
-| 429 | The key's rate limit was reached. |
-| 503 | The vault is unavailable because `PII_MASTER_KEY` is missing or wrong. |
-| 500 | Detection failed. The service **fails closed**: no text or file is returned, never a partly masked one. |
+| **Overview** | See the **PII protection switch**, requests and values hidden in the last 24 hours, the most hidden types, system health and recent activity. |
+| **Fields to hide** | Add, edit, pause and delete [fields](#fields-the-dictionary-of-values-to-hide): the labels that introduce a value and the known values to hide. |
+| **Detection settings** | Switch each kind of data on or off, add your own regex types (with a pattern tester), set the confidence threshold, names, sensitive keywords, the allow-list, document-property removal, OCR, and whether callers may override settings. |
+| **API keys** | Create keys (shown once), change permissions and rate limits, and revoke. |
+| **Audit log** | Filter by caller or operation. Counts only, never values. |
+| **Check a document** | Add a file and see what would be hidden: counts by kind, a preview of the masked text, and a download of the masked file. Nothing is stored. |
+| **Try it** | Run sample text or a file through masking with optional per-request options. |
 
-## Files: what is covered
+**PII protection switch.** Turning it off (with a confirmation) makes every masking endpoint return text and documents
+**unchanged**, and the response says so. Use it for testing or an emergency. Its state shows in the page's top bar, in
+`/healthz` and in `/v1/admin/overview`.
 
-| Format | How | Covered | Not covered |
-|---|---|---|---|
-| TXT, MD | Whole text; encoding (UTF-8, UTF-8 BOM, UTF-16, cp1252) is preserved. | Everything | |
-| CSV | Cell by cell, plus keyword columns and keyword labels (see XLSX). Delimiter is detected. | Every cell | |
-| DOCX | Paragraph by paragraph across runs. The replacement goes in the run where the value starts, so formatting is kept. | Body, tables, text boxes, headers, footers, footnotes, endnotes, comments; author and other properties are cleared | Charts, SmartArt, embedded objects, images |
-| PPTX | The same, per paragraph. | Slides (shapes, tables, groups), speaker notes; properties cleared | Charts, SmartArt, slide masters and layouts, images |
-| XLSX | Cell by cell. A header cell that is a keyword (`DOB`, `Salary`) makes every value below it sensitive; a cell that is just a keyword (`Salary:`) makes the next cell to its right sensitive. Numbers are checked as text; a replaced number becomes text. | Cells, comments; properties cleared | Formulas (left alone), chart text, shapes (openpyxl drops shapes when saving) |
-| PDF | **True redaction** with PyMuPDF. Each value's words get a redaction annotation carrying the label or token, and applying it **removes the characters from the content stream** and blanks image pixels underneath. It is not a box drawn over text that is still there. Whole words are redacted. Links over redacted areas are removed. Metadata, XMP, attachments, JavaScript and thumbnails are scrubbed. | Text layer; scanned pages through OCR | Personal data inside images on pages that also have real text, form-field values, annotation text; encrypted PDFs are refused |
+## Admin API
 
-**Scanned PDFs and OCR.** A page with images and almost no text (under 20 characters) is treated as scanned. When
-OCR is on (`ocr_enabled`, the default) and Tesseract language data is available (it is in the Docker image), the page
-is OCR'd at 300 dpi and the image pixels under each value are blanked, with the label written in their place. Without
-OCR data, such pages are left unchanged and listed in `unprocessed_image_pages`, so check that field. OCR quality depends
-on the scan. `ocr_language` takes Tesseract codes such as `eng` or `eng+hin` (install the matching language data).
+All need the `admin` permission.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /v1/admin/overview` | Health, protection switch, counts and the last 24 hours. |
+| `POST /v1/admin/check` | Multipart `file` (and optional `options`): what would be hidden, a text preview of the masked result and the masked file (base64, up to 8 MB). Stores nothing. |
+| `GET /v1/admin/settings`, `PUT` the same path | The settings in force, or change some of them (partial JSON). |
+| `GET /v1/admin/custom-types`, `POST` the same path | List or add regex types: `{"name": "EMPLOYEE_ID", "pattern": "\\bEMP-\\d{5}\\b", "context": ["employee"], "confidence": 85}`. A new type is enabled straight away. |
+| `PUT` or `DELETE /v1/admin/custom-types/{id}` | Change or delete a type. |
+| `POST /v1/admin/custom-types/test` | `{"pattern": "...", "text": "sample"}` shows what a pattern matches. |
+| `GET /v1/admin/fields`, `POST` the same path | List the dictionary, or add a field: `{"name", "description", "terms", "labels", "enabled"}`. |
+| `PATCH /v1/admin/fields/{id}` | Change a field. `terms` or `labels` given replace the old lists; `{"enabled": false}` pauses it. |
+| `POST /v1/admin/fields/{id}/terms` | `{"add": [...], "remove": [...]}` adds values to a field or takes some out. |
+| `DELETE /v1/admin/fields/{id}` | Delete a field. |
+| `GET /v1/admin/keys`, `POST` the same path | List keys (never the key itself) or create one: `{"name", "permissions", "rate_limit"}`. |
+| `PATCH /v1/admin/keys/{id}`, `DELETE` the same path | Change a key's permissions or rate limit, or revoke it. |
+| `GET /v1/admin/audit?key=&operation=&since=&limit=` | Recent audit entries, newest first. |
 
 ## Fields: the dictionary of values to hide
 
 A **field** is a named kind of data you want hidden, such as `CLIENT_COMPANY_NAME`. Its name is what the value becomes
-(`<CLIENT_COMPANY_NAME>`, or a token such as `<CLIENT_COMPANY_NAME_3f9a12c0>`). A field has:
+(`<CLIENT_COMPANY_NAME>`). A field has:
 
 - **terms**: the known values. Each is found wherever it appears, ignoring case, spacing, and full stops or commas
-  between words. For example, the term `Acme Technologies Pvt Ltd` also finds "ACME Technologies Pvt. Ltd.". Whole words
-  only: the term `Acme` does not match "Acmeville".
+  between words. The term `Acme Technologies Pvt Ltd` also finds "ACME Technologies Pvt. Ltd.". Whole words only: the
+  term `Acme` does not match "Acmeville".
 - **labels**: words that introduce a value. After "Client Name:" (or `=`, `|`, ` - `), the value up to the end of the
-  sentence or cell is masked as this field. In a table, a cell that is just a label masks the cell beside it, or every
-  cell below it when the label is a column header. When two fields' labels find the same value ("Authorised
-  Signatory:" and "Client Authorised Signatory:"), the longer label decides.
+  sentence or cell is masked as this field. In a table, a cell that is just a label masks the cell beside it, or every cell
+  below it when the label is a column header. When labels of two fields find the same value, the longer label decides.
 - **enabled**: set it to false to pause a field without deleting it.
 
 A value an admin listed beats any other detection of the same text. A CIN in your `COMPANY_CIN` terms becomes
@@ -299,75 +308,68 @@ A new service starts with these fields. Add your values to them, and add any fur
 | `INTERNAL_SIGNATORY` | Authorised Signatory, Authorized Signatory, Signatory Name |
 
 Generic labels such as "CIN:", "GSTIN:" or "PAN:" don't say whose number it is. They are left to format detection
-(`IN_CIN`, `IN_GSTIN`, `IN_PAN`), which masks every such number. Listing a number as a term labels it as yours or the
-client's.
+(`IN_CIN`, `IN_GSTIN`, `IN_PAN`), which masks every such number.
 
 ```bash
-# your company's details
-curl -s localhost:8000/v1/admin/fields -H "X-API-Key: $ADMIN"            # find the field ids
 curl -s -X POST localhost:8000/v1/admin/fields/1/terms -H "X-API-Key: $ADMIN" -H "Content-Type: application/json" \
   -d '{"add": ["Acme Technologies Pvt Ltd", "Acme Technologies"]}'
-
-# a field of your own
-curl -s -X POST localhost:8000/v1/admin/fields -H "X-API-Key: $ADMIN" -H "Content-Type: application/json" \
-  -d '{"name": "PROJECT_NAME", "terms": ["Project Falcon"], "labels": ["Project Name"]}'
 ```
 
-**Client-specific values** often differ from one document to the next. Either keep a list of clients in
-`CLIENT_COMPANY_NAME` and the other client fields, or send this client's values with the request, which uses them
-for that request only:
+**Client-specific values** differ from one contract to the next. Either keep a list of clients in the client fields, or send
+this client's values with the request (used for that request only). For `/v1/mask`:
 
 ```json
-{"text": "...", "options": {"fields": [{"name": "CLIENT_COMPANY_NAME", "terms": ["Globex Corporation"]},
-                                       {"name": "CLIENT_SIGNATORY", "terms": ["Rahul Rao"]}]}}
+{"text": "...", "options": {"fields": [{"name": "CLIENT_COMPANY_NAME", "terms": ["Globex Corporation"]}]}}
 ```
 
-For files, send the same JSON as the `options` form field.
+The CMS endpoint takes no per-request options, so it masks with the stored dictionary. Keep the client details it needs in
+the dictionary.
 
-**Limits.**
-- An address or name split over several lines of a Word or PowerPoint file is matched line by line. Add each line as
-  a term, or use a label.
-- A signatory name on a line of its own under "Authorised Signatory" has no label beside it. List the names as terms,
-  or turn on `mask_names`.
-
-The settings file (`PII_SETTINGS_FILE`) can hold a `fields` list, which replaces the starter fields on first start.
+**Limits.** An address or name split over several lines of a Word file is matched line by line: add each line as a term, or
+use a label. A signatory's name on a line of its own under "Authorised Signatory" has no label beside it: list the names
+as terms, or turn on `mask_names`.
 
 ## Settings and per-request options
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `enabled_types` | email, phone, card, US SSN, Aadhaar, PAN, GSTIN, CIN, IBAN | Types to detect (built-in and custom). |
-| `threshold` | `40` | Minimum detector confidence in percent. Lower values catch more but give more false alarms. |
+| `threshold` | `40` | Minimum detector confidence in percent. Lower catches more, with more false alarms. |
 | `mask_names` | `false` | Also detect people's names (`PERSON`). This is approximate. |
-| `keywords_enabled`, `sensitive_keywords` | on, `Salary, CTC, DOB, ...` | The value after a keyword becomes `SENSITIVE_VALUE`. After `:`, `=`, `\|` or ` - `, any value up to the end of the sentence or cell counts; otherwise only a value that starts with a number. A value is at most 120 characters. |
+| `keywords_enabled`, `sensitive_keywords` | on, `Salary, CTC, DOB, ...` | The value after a keyword becomes `SENSITIVE_VALUE`. After `:`, `=`, `\|` or ` - `, any value up to the end of the sentence or cell counts; otherwise only a value that starts with a number. At most 120 characters. |
 | `allow_list` | `[]` | Exact values never masked (for example a shared HR mailbox). |
 | `allow_overrides` | `true` | Whether requests may send `options`. |
 | `ocr_enabled`, `ocr_language` | `true`, `eng` | OCR for scanned PDF pages. |
-| `protection_enabled` | `true` | The master switch. When `false`, mask and tokenise pass text and files through unchanged. |
+| `protection_enabled` | `true` | The master switch. When `false`, masking passes text and documents through unchanged. |
 | `scrub_metadata` | `true` | Clear author, last editor, title and similar properties from Word, PowerPoint, Excel and PDF files. |
 
 A request's `options` can override `types`, `threshold`, `mask_names`, `keywords` and `allow_list`, and add `fields`
-values, for that request only:
-
-```json
-{"text": "...", "options": {"types": ["EMAIL_ADDRESS"], "threshold": 60, "keywords": ["Employee id"], "allow_list": ["hr@acme.com"],
-                            "fields": [{"name": "CLIENT_COMPANY_NAME", "terms": ["Globex Corporation"]}]}}
-```
-
-Keyword matching depends on sentence and cell boundaries. In running text, end sentences with a full stop so that a
+values, for that request only. Keyword matching depends on sentence and cell boundaries: end sentences with a full stop so a
 keyword's value does not run on into the next sentence.
 
-## Security notes
+## What is covered in each file type
 
-- Values are never logged, never stored in plain text, and never returned except by `unmask`. Presidio's debug
-  logging, which prints the words around a match, is silenced.
-- Vault values are encrypted with Fernet (AES-128-CBC with HMAC-SHA256). Tokens are HMACs keyed by a random secret,
-  which is itself stored encrypted, so a token reveals nothing about its value.
-- Keep `PII_MASTER_KEY` in a secret store. To rotate it, put the new key first
-  (`PII_MASTER_KEY=new,old`); new values use the new key and old values still decrypt.
-- Rate limits and the key cache are per process. With several workers or replicas, each enforces its own limit.
+| Format | How | Covered | Not covered |
+|---|---|---|---|
+| TXT, MD | Whole text; encoding is preserved. | Everything | |
+| CSV | Cell by cell, plus keyword columns and labels. | Every cell | |
+| DOCX | Paragraph by paragraph across runs; formatting is kept. | Body, tables, text boxes, headers, footers, footnotes, endnotes, comments; properties cleared | Charts, SmartArt, embedded objects, images |
+| PPTX | The same, per paragraph. | Slides, speaker notes; properties cleared | Charts, SmartArt, masters and layouts, images |
+| XLSX | Cell by cell; keyword and field headers mask whole columns. | Cells, comments; properties cleared | Formulas (left alone), chart text, shapes |
+| PDF | **True redaction** with PyMuPDF: the characters are removed from the page, not covered with a box. Links over redacted areas, metadata, attachments and JavaScript are removed. | Text layer; scanned pages through OCR | Personal data inside images on pages that also have text, form-field values; encrypted PDFs are refused |
+
+The CMS endpoint accepts `.docx` and `.pdf` only, as in the specification.
+
+## Security and deployment notes
+
+- Values are never logged and never stored. Masking is one-way. Presidio's debug logging, which prints the words around a
+  match, is silenced.
+- The only thing kept is the **masked** output of a CMS job, in memory, for `PII_JOB_TTL_MINUTES`.
 - Run behind TLS (a reverse proxy or load balancer). The service itself speaks plain HTTP.
+- Rate limits, the key cache and CMS jobs are per process. With several workers or replicas, each enforces its own limit and
+  holds its own jobs (see the CMS notes above).
 - File uploads are size-limited, checked against their claimed type, and refused if they are zip bombs.
+- An older database that has a `vault` table or key scopes still loads: those columns and tables are simply unused.
 
 ## Tests
 
@@ -375,7 +377,7 @@ keyword's value does not run on into the next sentence.
 python -m pytest -q
 ```
 
-The suite covers authentication, permissions, scopes and rate limits; mask; the tokenise → unmask round trip and
-scope isolation; overrides; the admin API; the audit log (which must hold no values); failing closed; and a round trip
-for every file format. The PDF test checks that the value is gone from the file bytes. The OCR test runs when Tesseract
-language data is available, for example in `docker build --target test .`, and is skipped otherwise.
+The suite covers authentication, permissions and rate limits; masking of text and every file type; the CMS API (success,
+headers, every error code, job ownership and expiry, the audit log); the admin API and page; fields; and that no
+unmask, token or vault endpoint exists. The PDF tests check that the value is gone from the file bytes. The OCR test runs when
+Tesseract language data is available, for example in `docker build --target test .`, and is skipped otherwise.

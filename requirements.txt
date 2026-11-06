@@ -4,7 +4,6 @@ python-multipart==0.0.32
 pydantic==2.14.1
 pydantic-settings==2.15.0
 SQLAlchemy==2.1.4
-cryptography==50.0.2
 presidio-analyzer==2.2.364
 spacy==3.8.16
 en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl

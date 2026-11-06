@@ -39,36 +39,25 @@ def test_custom_types(client, make_key):
 
 
 def test_keys_lifecycle(client):
-    r = client.post("/v1/admin/keys", headers=ADMIN, json={"name": "billing", "permissions": ["mask"], "scopes": ["billing"]})
+    r = client.post("/v1/admin/keys", headers=ADMIN, json={"name": "billing", "permissions": ["mask"]})
     assert r.status_code == 201
     info, key = r.json(), r.json()["key"]
     assert key.startswith("pii_") and info["rate_limit"] == 120
     listed = client.get("/v1/admin/keys", headers=ADMIN).json()
     assert any(k["name"] == "billing" for k in listed) and all("key" not in k and "key_hash" not in k for k in listed)
-    assert client.post("/v1/admin/keys", headers=ADMIN, json={"name": "billing", "permissions": ["mask"],
-                                                              "scopes": ["x"]}).status_code == 409
-    assert client.post("/v1/admin/keys", headers=ADMIN, json={"name": "y", "permissions": ["fly"],
-                                                              "scopes": ["x"]}).status_code == 400
+    assert client.post("/v1/admin/keys", headers=ADMIN, json={"name": "billing", "permissions": ["mask"]}).status_code == 409
+    assert client.post("/v1/admin/keys", headers=ADMIN, json={"name": "y", "permissions": ["fly"]}).status_code == 400
     h = {"Authorization": f"Bearer {key}"}
     assert client.post("/v1/mask", headers=h, json={"text": "hi"}).status_code == 200
-    client.patch(f"/v1/admin/keys/{info['id']}", headers=ADMIN, json={"permissions": ["tokenise"]})
+    client.patch(f"/v1/admin/keys/{info['id']}", headers=ADMIN, json={"permissions": ["admin"]})
     assert client.post("/v1/mask", headers=h, json={"text": "hi"}).status_code == 403
     assert client.delete(f"/v1/admin/keys/{info['id']}", headers=ADMIN).json()["active"] is False
     assert client.post("/v1/mask", headers=h, json={"text": "hi"}).status_code == 401
 
 
-def test_audit_and_vault_admin(client, make_key):
-    h = make_key(["tokenise"], ["purge-me"])
-    client.post("/v1/tokenise", headers=h, json={"text": "Mail x.y@corp.com"})
-    log = client.get("/v1/admin/audit", headers=ADMIN, params={"operation": "tokenise", "limit": 5}).json()
-    assert log and log[0]["scope"] == "purge-me" and log[0]["counts"] == {"EMAIL_ADDRESS": 1}
-    stats = {s["scope"]: s for s in client.get("/v1/admin/vault", headers=ADMIN).json()}
-    assert stats["purge-me"]["total"] == 1
-    assert client.delete("/v1/admin/vault/purge-me", headers=ADMIN).json()["deleted"] == 1
-
 
 def test_admin_needs_admin(client, make_key):
-    assert client.get("/v1/admin/settings", headers=make_key(["mask", "tokenise", "unmask"])).status_code == 403
+    assert client.get("/v1/admin/settings", headers=make_key(["mask"])).status_code == 403
 
 
 def test_settings_file_seeds_a_new_database(tmp_path, monkeypatch):
@@ -85,3 +74,10 @@ def test_settings_file_seeds_a_new_database(tmp_path, monkeypatch):
     assert s["allow_list"] == ["hr@example.com"] and "EMPLOYEE_ID" in s["enabled_types"]
     assert [t["name"] for t in policy.custom_types(db)] == ["EMPLOYEE_ID"]
     policy.invalidate()
+
+
+def test_audit_log_lists_calls_with_counts(client, make_key):
+    h = make_key(["mask"])
+    client.post("/v1/mask", headers=h, json={"text": "Mail x.y@corp.com"})
+    log = client.get("/v1/admin/audit", headers=ADMIN, params={"operation": "mask", "limit": 5}).json()
+    assert log and log[0]["counts"] == {"EMAIL_ADDRESS": 1} and "scope" not in log[0]

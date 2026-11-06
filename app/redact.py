@@ -1,16 +1,13 @@
-"""One request's work: find what to replace in a piece of text and what to replace it with.
+"""One request's work: find what to hide in a piece of text and replace it with a label such as `<EMAIL_ADDRESS>`.
 
-The same `Redactor` drives plain text and every file format, in one of three modes:
-mask (`<EMAIL_ADDRESS>`), tokenise (`<EMAIL_ADDRESS_7f3a9c21>`, value kept in the vault) or unmask (tokens back to values).
-It counts what it replaced by type; it never keeps or returns a value except in unmask output.
+The same `Redactor` drives plain text and every file format. Masking is one-way: the original value is not kept
+anywhere, so nothing can be restored. It counts what it replaced by type and never keeps or returns a value.
 """
 from collections import Counter
 from dataclasses import dataclass
 
-from app import detect, vault
+from app import detect
 from app.policy import KEYWORD_TYPE, Policy
-
-MODES = ("mask", "tokenise", "unmask")
 
 
 @dataclass(frozen=True)
@@ -23,31 +20,23 @@ class Change:
 
 
 class Redactor:
-    def __init__(self, mode: str, policy: Policy | None, scope: str = ""):
-        if mode not in MODES:
-            raise ValueError(f"unknown mode {mode}")
-        self.mode, self.policy, self.scope = mode, policy, scope
+    def __init__(self, policy: Policy):
+        self.policy = policy
         self.counts: Counter = Counter()
-        self.unknown_tokens: set[str] = set()
-        self._tokens: dict[tuple[str, str], str] = {}
 
     @property
     def label_groups(self) -> tuple:
         """[(what the value becomes, labels)] for table cells that label the cell beside or below them."""
-        return self.policy.label_groups if self.policy and self.mode != "unmask" else ()
+        return self.policy.label_groups
 
     @property
     def scrub(self) -> bool:
         """Whether to clear document properties (author, title, ...) from the file."""
-        return bool(self.policy and self.policy.scrub_metadata and self.mode != "unmask")
+        return bool(self.policy.scrub_metadata)
 
-    def replacement(self, entity: str, value: str) -> str:
-        if self.mode == "mask":
-            return f"<{entity}>"
-        key = (entity, " ".join(value.split()).casefold())
-        if key not in self._tokens:
-            self._tokens[key] = vault.token_for(self.scope, entity, value)
-        return f"<{self._tokens[key]}>"
+    @staticmethod
+    def replacement(entity: str, _value: str = "") -> str:
+        return f"<{entity}>"
 
     def whole(self, value: str, entity: str = KEYWORD_TYPE) -> str:
         """Replace a whole value (a table cell next to a keyword or field label) and count it."""
@@ -57,20 +46,9 @@ class Redactor:
     def find(self, text: str) -> list[Change]:
         if not text:
             return []
-        if self.mode == "unmask":
-            matches = list(detect.TOKEN_RE.finditer(text))
-            values = vault.lookup(self.scope, {m.group(1) for m in matches})
-            out = []
-            for m in matches:
-                if m.group(1) in values:
-                    out.append(Change(m.start(), m.end(), m.group(2), 1.0, values[m.group(1)]))
-                    self.counts[m.group(2)] += 1
-                else:
-                    self.unknown_tokens.add(m.group(1))
-            return out
         out = []
         for h in detect.detect(text, self.policy):
-            out.append(Change(h.start, h.end, h.entity_type, h.score, self.replacement(h.entity_type, text[h.start:h.end])))
+            out.append(Change(h.start, h.end, h.entity_type, h.score, self.replacement(h.entity_type)))
             self.counts[h.entity_type] += 1
         return out
 
@@ -79,10 +57,7 @@ class Redactor:
         return apply(text, changes), changes
 
     def summary(self) -> dict:
-        out = {"counts": dict(sorted(self.counts.items())), "total": sum(self.counts.values())}
-        if self.mode == "unmask":
-            out["unknown_tokens"] = len(self.unknown_tokens)
-        return out
+        return {"counts": dict(sorted(self.counts.items())), "total": sum(self.counts.values())}
 
 
 def apply(text: str, changes) -> str:

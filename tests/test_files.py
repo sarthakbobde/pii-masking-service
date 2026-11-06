@@ -136,16 +136,6 @@ def test_docx_mask_keeps_formatting_and_clears_author(client, make_key):
     assert d.paragraphs[0].runs[1].bold and d.core_properties.author == ""
 
 
-def test_docx_tokenise_then_unmask(client, make_key):
-    h = make_key(["tokenise", "unmask"])
-    original = make_docx()
-    t = _post(client, h, "tokenise", "letter.docx", original)
-    assert EMAIL not in docx_text(t.content) and "<EMAIL_ADDRESS_" in docx_text(t.content)
-    back = _post(client, h, "unmask", "letter.tokenised.docx", t.content)
-    assert back.status_code == 200
-    text = docx_text(back.content)
-    assert f"Contact {EMAIL} or {PHONE} today." in text and "mary@corp.org" in text
-
 
 def test_pptx(client, make_key):
     r = _post(client, make_key(["mask"]), "mask", "deck.pptx", make_pptx())
@@ -180,13 +170,6 @@ def test_pdf_true_redaction(client, make_key):
     s = _summary(r)
     assert s["pages"] == 1 and s["counts"]["EMAIL_ADDRESS"] == 1
 
-
-def test_pdf_tokenise_and_refuse_unmask(client, make_key):
-    import pymupdf
-    h = make_key(["tokenise", "unmask"])
-    r = _post(client, h, "tokenise", "report.pdf", make_pdf([LINE]))
-    assert "<EMAIL_ADDRESS_" in pymupdf.open(stream=r.content, filetype="pdf")[0].get_text()
-    assert _post(client, h, "unmask", "report.pdf", r.content).status_code == 415
 
 
 def test_scanned_pdf_without_ocr_is_reported(client, make_key):

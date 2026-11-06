@@ -1,11 +1,8 @@
 import os
 import tempfile
 
-from cryptography.fernet import Fernet
-
 _tmp = tempfile.mkdtemp(prefix="pii-tests-")
 os.environ["PII_DATABASE_URL"] = f"sqlite:///{_tmp}/test.db"
-os.environ["PII_MASTER_KEY"] = Fernet.generate_key().decode()
 os.environ["PII_BOOTSTRAP_ADMIN_KEY"] = "test-admin-key-0123456789abcdef"
 os.environ["PII_WARM_UP"] = "false"
 os.environ.pop("PII_SETTINGS_FILE", None)
@@ -46,12 +43,12 @@ _n = 0
 
 @pytest.fixture
 def make_key(client):
-    """make_key(["mask"], ["team-a"], rate_limit=None) -> request headers for a new key."""
-    def make(permissions, scopes=("team-a",), rate_limit=None):
+    """make_key(["mask"], rate_limit=None) -> request headers for a new key."""
+    def make(permissions, rate_limit=None):
         global _n
         _n += 1
         r = client.post("/v1/admin/keys", headers=ADMIN, json={"name": f"svc-{_n}", "permissions": list(permissions),
-                                                               "scopes": list(scopes), "rate_limit": rate_limit})
+                                                               "rate_limit": rate_limit})
         assert r.status_code == 201, r.text
         return {"X-API-Key": r.json()["key"]}
     return make

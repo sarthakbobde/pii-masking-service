@@ -1,9 +1,9 @@
-"""Tables: API keys, settings, custom types, the vault, the audit log. SQLite by default, any SQLAlchemy URL works."""
+"""Tables: API keys, settings, fields, custom types and the audit log. SQLite by default, any SQLAlchemy URL works."""
 import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, event
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -22,7 +22,7 @@ class ApiKey(Base):
     prefix: Mapped[str] = mapped_column(String(16))                       # shown in listings to tell keys apart
     key_hash: Mapped[str] = mapped_column(String(64), unique=True)        # SHA-256 of the whole key; the key is never stored
     permissions: Mapped[list] = mapped_column(JSON)
-    scopes: Mapped[list] = mapped_column(JSON)                            # first one is the default; "*" means any
+    scopes: Mapped[list] = mapped_column(JSON, default=lambda: ["*"])     # unused: kept so older databases still load
     rate_limit: Mapped[int] = mapped_column(Integer)                      # requests per minute
     active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
@@ -61,24 +61,6 @@ class Field(Base):
     enabled: Mapped[bool] = mapped_column(default=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
     updated_by: Mapped[str] = mapped_column(String(80), default="")
-
-
-class Secret(Base):
-    __tablename__ = "secrets"
-    name: Mapped[str] = mapped_column(String(40), primary_key=True)
-    ciphertext: Mapped[str] = mapped_column(Text)
-
-
-class VaultEntry(Base):
-    __tablename__ = "vault"
-    __table_args__ = (UniqueConstraint("scope", "token"), UniqueConstraint("scope", "value_hash"))
-    id: Mapped[int] = mapped_column(primary_key=True)
-    scope: Mapped[str] = mapped_column(String(80), index=True)
-    token: Mapped[str] = mapped_column(String(120))
-    entity_type: Mapped[str] = mapped_column(String(40))
-    value_hash: Mapped[str] = mapped_column(String(64))                   # the HMAC that also names the token
-    value_encrypted: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class AuditEntry(Base):

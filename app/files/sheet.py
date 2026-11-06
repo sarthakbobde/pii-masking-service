@@ -84,14 +84,14 @@ def xlsx(data: bytes, r: Redactor) -> bytes:
                     new, changes = r.run(v)
                     if changes:
                         cell.value = new
-                elif isinstance(v, (int, float)) and not isinstance(v, bool) and r.mode != "unmask":
+                elif isinstance(v, (int, float)) and not isinstance(v, bool):
                     new, changes = r.run(_as_text(v))
                     if changes:
                         cell.value = new
                 if cell.comment is not None and cell.comment.text:
                     new, changes = r.run(cell.comment.text)
                     if changes:
-                        cell.comment = Comment(new, "" if r.mode != "unmask" else cell.comment.author)
+                        cell.comment = Comment(new, "")
     if r.scrub:
         wb.properties.creator = ""
         wb.properties.lastModifiedBy = ""

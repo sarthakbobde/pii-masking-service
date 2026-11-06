@@ -34,7 +34,6 @@ const ICONS = {
   detection: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
   keys: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l2 2"/>',
   audit: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
-  vault: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/>',
   check: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 14l2 2 4-4"/>',
   tryit: '<path d="M9 3h6M10 3v6l-5 9a2 2 0 002 3h10a2 2 0 002-3l-5-9V3"/>',
   shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
@@ -162,7 +161,7 @@ function logo() {
 
 // ---- shell -----------------------------------------------------------------------------------------------------------------
 const NAV = [["overview", "Overview"], ["fields", "Fields to hide"], ["detection", "Detection settings"], ["keys", "API keys"],
-  ["audit", "Audit log"], ["vault", "Token vault"], ["check", "Check a document"], ["tryit", "Try it"]];
+  ["audit", "Audit log"], ["check", "Check a document"], ["tryit", "Try it"]];
 let content, topbar;
 
 function renderShell() {
@@ -222,7 +221,7 @@ async function setProtection(on) {
   if (!on) {
     const ok = await confirmBox({
       title: "Switch PII protection off?",
-      message: "While it is off, text and files sent to mask or tokenise come back UNCHANGED, with nothing detected and nothing stored. Callers are told in the response. Use this only for testing or an emergency.",
+      message: "While it is off, text and documents sent for masking come back UNCHANGED, with nothing detected. Callers are told in the response. Use this only for testing or an emergency.",
       confirm: "Switch off", danger: true,
     });
     if (!ok) return false;
@@ -248,14 +247,13 @@ async function pageOverview(c) {
     el("div", { class: "protect " + (on ? "on" : "off") },
       el("div", { class: "ico" }, icon(on ? "shield" : "shieldoff")),
       el("div", { class: "txt" }, el("b", {}, on ? "PII protection is on" : "PII protection is OFF"),
-        el("p", {}, on ? "Mask and tokenise requests hide personal data as configured." : "Mask and tokenise requests return text and files unchanged. Nothing is being hidden.")),
+        el("p", {}, on ? "Masking requests hide personal data as configured." : "Masking requests return text and documents unchanged. Nothing is being hidden.")),
       big),
     el("div", { class: "tiles" },
       tile("Requests, 24 h", fmt(d.calls), `${fmt(d.errors)} failed or refused`),
       tile("Values hidden, 24 h", fmt(d.values), "across all callers"),
       tile("Fields", `${n.fields_enabled} / ${n.fields}`, `${fmt(n.field_values)} known values`),
-      tile("Active API keys", fmt(n.active_keys), `${n.custom_types} custom type(s)`),
-      tile("Vault", fmt(n.vault_values), `values in ${n.vault_scopes} scope(s)`)),
+      tile("Active API keys", fmt(n.active_keys), `${n.custom_types} custom type(s)`)),
     el("div", { class: "grid cols-2" },
       el("div", { class: "card" }, el("div", { class: "card-head" }, el("h2", {}, "Most hidden types, 24 h")),
         el("div", { class: "card-body" }, bars.length
@@ -266,7 +264,6 @@ async function pageOverview(c) {
         el("div", { class: "card-body" }, el("div", { class: "health" },
           hl("Detector", h.detector === "ready" ? pill("ok", "Ready") : pill(h.detector === "loading" ? "warn" : "bad", h.detector)),
           hl("Database", h.database ? pill("ok", "Connected") : pill("bad", "Down")),
-          hl("Token vault", h.vault ? pill("ok", "Available") : pill("warn", "No master key")),
           hl("OCR", h.ocr ? pill("ok", "Available") : pill("off", "Not installed"))),
         el("p", { class: "hint", style: "margin-top:12px" }, `Limits: text up to ${fmt(o.limits.max_text_chars)} characters, files up to ${o.limits.max_upload_mb} MB, ${o.limits.default_rate_limit} requests a minute by default.`)))),
     el("div", { class: "card" }, el("div", { class: "card-head" }, el("h2", {}, "Recent activity"), el("a", { class: "btn small", href: "#/audit" }, "Open audit log")),
@@ -450,19 +447,18 @@ function customModal(t) {
 }
 
 // ---- API keys --------------------------------------------------------------------------------------------------------------
-const PERMS = [["mask", "Mask text and files (one-way)"], ["tokenise", "Tokenise (reversible)"], ["unmask", "Restore real values"], ["admin", "Administer this service"]];
+const PERMS = [["mask", "Use the masking API (text and documents, one-way)"], ["admin", "Administer this service"]];
 
 async function pageKeys(c) {
   const keys = await api("GET", "/v1/admin/keys");
-  put(c, head("API keys", "One key per calling system, each with its own permissions, scopes and rate limit. Keys are stored only as hashes.",
+  put(c, head("API keys", "One key per calling system, each with its own permissions and rate limit. Keys are stored only as hashes.",
     el("button", { class: "btn primary", type: "button", onclick: () => keyModal(null) }, "+ Create key")),
     el("div", { class: "card" }, el("div", { class: "table-wrap" }, el("table", {},
-      el("thead", {}, el("tr", {}, ["Name", "Key", "Permissions", "Scopes", "Rate / min", "Last used", "Status", ""].map((t) => el("th", {}, t)))),
+      el("thead", {}, el("tr", {}, ["Name", "Key", "Permissions", "Rate / min", "Last used", "Status", ""].map((t) => el("th", {}, t)))),
       el("tbody", {}, keys.map((k) => el("tr", { style: k.active ? "" : "opacity:.6" },
         el("td", {}, el("b", {}, k.name), el("div", { class: "muted" }, "by " + (k.created_by || "system"))),
         el("td", {}, el("code", {}, k.prefix + "…")),
-        el("td", {}, el("div", { class: "chips" }, k.permissions.map((p) => el("span", { class: "chip" + (p === "unmask" || p === "admin" ? " teal" : "") }, p)))),
-        el("td", {}, el("div", { class: "chips" }, k.scopes.map((s) => el("span", { class: "chip mono" }, s)))),
+        el("td", {}, el("div", { class: "chips" }, k.permissions.map((p) => el("span", { class: "chip" + (p === "admin" ? " teal" : "") }, p)))),
         el("td", { class: "num" }, fmt(k.rate_limit)), el("td", {}, when(k.last_used_at)),
         el("td", {}, k.active ? pill("ok", "Active") : pill("off", "Revoked")),
         el("td", { class: "actions" }, k.active ? el("button", { class: "btn small", type: "button", onclick: () => keyModal(k) }, "Edit") : null))))))));
@@ -472,17 +468,15 @@ function keyModal(k) {
   const isNew = !k;
   const name = el("input", { type: "text", value: k ? k.name : "", placeholder: "billing-app", disabled: !isNew, maxlength: 80 });
   const perms = new Set(k ? k.permissions : ["mask"]);
-  const scopes = el("input", { type: "text", value: k ? k.scopes.join(", ") : "", placeholder: "billing (the first is the default; * for any)" });
   const rate = el("input", { type: "number", min: 1, max: 100000, value: k ? k.rate_limit : 120 });
   const body = el("div", {},
     el("label", { class: "f" }, el("span", { class: "t" }, "Name"), name, isNew ? el("span", { class: "h" }, "The calling system, e.g. billing-app.") : el("span", { class: "h" }, "A key's name cannot be changed.")),
     el("div", { class: "f" }, el("span", { class: "t", style: "display:block;font-weight:600;margin-bottom:6px" }, "Permissions"),
       PERMS.map(([p, d]) => el("label", { class: "row", style: "margin-bottom:6px;gap:8px" },
         sw(perms.has(p), (v) => { v ? perms.add(p) : perms.delete(p); }, false, p), el("span", {}, el("b", {}, p), " · ", d)))),
-    el("label", { class: "f" }, el("span", { class: "t" }, "Scopes"), scopes, el("span", { class: "h" }, "Token namespaces this key may use. Tokens made in one scope cannot be restored in another.")),
     el("label", { class: "f" }, el("span", { class: "t" }, "Requests per minute"), rate));
   const save = async (close) => {
-    const payload = { permissions: [...perms], scopes: scopes.value.split(",").map((x) => x.trim()).filter(Boolean), rate_limit: +rate.value };
+    const payload = { permissions: [...perms], rate_limit: +rate.value };
     try {
       if (isNew) {
         const made = await api("POST", "/v1/admin/keys", { name: name.value, ...payload });
@@ -512,9 +506,9 @@ function showKey(made) {
 function auditTable(rows) {
   if (!rows.length) return el("div", { class: "empty" }, "No activity yet.");
   return el("div", { class: "table-wrap" }, el("table", {},
-    el("thead", {}, el("tr", {}, ["Time", "Caller", "Operation", "Scope", "Result", "Hidden", "What", "ms"].map((t, i) => el("th", { class: i === 5 || i === 7 ? "num" : "" }, t)))),
+    el("thead", {}, el("tr", {}, ["Time", "Caller", "Operation", "Result", "Hidden", "What", "ms"].map((t, i) => el("th", { class: i === 4 || i === 6 ? "num" : "" }, t)))),
     el("tbody", {}, rows.map((e) => el("tr", {},
-      el("td", {}, when(e.at)), el("td", {}, e.key || "—"), el("td", {}, el("code", {}, e.operation)), el("td", {}, e.scope ? el("span", { class: "chip mono" }, e.scope) : "—"),
+      el("td", {}, when(e.at)), el("td", {}, e.key || "—"), el("td", {}, el("code", {}, e.operation)),
       el("td", {}, e.status < 300 ? pill("ok", String(e.status)) : e.status < 500 ? pill("warn", String(e.status)) : pill("bad", String(e.status)), e.detail ? el("div", { class: "muted" }, e.detail) : null),
       el("td", { class: "num" }, fmt(e.total)),
       el("td", {}, el("div", { class: "chips" }, Object.entries(e.counts || {}).map(([k, v]) => el("span", { class: "chip" }, `${k} ${v}`)))),
@@ -538,35 +532,6 @@ async function pageAudit(c) {
     el("div", { class: "card", style: "margin-bottom:16px" }, el("div", { class: "card-body row" }, el("div", { class: "grow" }, key), el("div", { class: "grow" }, op), lim,
       el("button", { class: "btn primary", type: "button", onclick: load }, "Apply"))), out);
   await load();
-}
-
-// ---- vault -----------------------------------------------------------------------------------------------------------------
-async function purgeScope(r) {
-  const ok = await confirmBox({
-    title: "Delete all values in this scope?",
-    message: `All ${r.total} stored value(s) in “${r.scope}” will be deleted. Tokens already issued can no longer be restored to real values.`,
-    confirm: "Delete values", danger: true,
-  });
-  if (!ok) return;
-  try { await api("DELETE", `/v1/admin/vault/${encodeURIComponent(r.scope)}`); toast("Scope emptied."); show(); } catch (e) { fail(e); }
-}
-
-async function pageVault(c) {
-  const rows = await api("GET", "/v1/admin/vault");
-  const heads = ["Scope", "Stored values", "By type", ""].map((t, i) => el("th", { class: i === 1 ? "num" : "" }, t));
-  const body = rows.map((r) => {
-    const chips = Object.entries(r.counts).map(([k, v]) => el("span", { class: "chip" }, `${k} ${v}`));
-    const del = el("button", { class: "btn small danger", type: "button", onclick: () => purgeScope(r) }, "Delete values");
-    return el("tr", {},
-      el("td", {}, el("span", { class: "chip mono" }, r.scope)),
-      el("td", { class: "num" }, fmt(r.total)),
-      el("td", {}, el("div", { class: "chips" }, chips)),
-      el("td", { class: "actions" }, del));
-  });
-  const table = el("div", { class: "table-wrap" }, el("table", {}, el("thead", {}, el("tr", {}, heads)), el("tbody", {}, body)));
-  const empty = el("div", { class: "empty" }, "The vault is empty. Values appear here once something has been tokenised.");
-  put(c, head("Token vault", "Real values behind reversible tokens, kept encrypted. This page shows counts only, never the values."),
-    el("div", { class: "card" }, rows.length ? table : empty));
 }
 
 function markup(s) {
@@ -641,8 +606,6 @@ function saveMasked(r) {
 const SAMPLE = "Please contact Rohan at rohan.sharma@gmail.com or +91 98450 12345. PAN BQKPS4821L. Salary: 24,50,000. Client Name: Globex Retail Pvt. Ltd.";
 
 async function pageTry(c) {
-  const mode = el("select", { "aria-label": "Mode" }, [["mask", "Mask (one-way labels)"], ["tokenise", "Tokenise (reversible)"], ["unmask", "Unmask (restore values)"]].map(([v, t]) => el("option", { value: v }, t)));
-  const scope = el("input", { type: "text", value: "admin-test", "aria-label": "Scope" });
   const optsText = el("textarea", { rows: 3, class: "mono", placeholder: '{"threshold": 60, "fields": [{"name": "CLIENT_COMPANY_NAME", "terms": ["Globex Retail"]}]}' });
   const text = el("textarea", { rows: 6 }, SAMPLE);
   const out = el("div", { class: "out", "aria-live": "polite" }, "The result appears here.");
@@ -654,10 +617,10 @@ async function pageTry(c) {
   const showMeta = (counts, extra) => meta.replaceChildren(...Object.entries(counts || {}).map(([k, v]) => el("span", { class: "chip teal" }, `${k} ${v}`)), ...(extra || []).filter(Boolean));
   const run = async () => {
     try {
-      const body = { text: text.value, scope: scope.value.trim() || undefined };
-      const o = mode.value === "unmask" ? undefined : parseOpts();
+      const body = { text: text.value };
+      const o = parseOpts();
       if (o) body.options = o;
-      const r = await api("POST", "/v1/" + mode.value, body);
+      const r = await api("POST", "/v1/mask", body);
       out.replaceChildren(...markup(r.text));
       showMeta(r.counts, [r.protection === "off" ? el("span", { class: "callout bad" }, "PII protection is OFF: the text was returned unchanged.") : null,
         r.unknown_tokens ? el("span", { class: "chip" }, r.unknown_tokens + " unknown token(s)") : null]);
@@ -668,10 +631,9 @@ async function pageTry(c) {
     try {
       const form = new FormData();
       form.append("file", file.files[0]);
-      if (mode.value !== "mask") form.append("scope", scope.value.trim() || "admin-test");
-      const o = mode.value === "unmask" ? undefined : parseOpts();
+      const o = parseOpts();
       if (o) form.append("options", JSON.stringify(o));
-      const r = await api("POST", "/v1/files/" + mode.value, form, true);
+      const r = await api("POST", "/v1/files/mask", form, true);
       if (!r.ok) { const d = await r.json().catch(() => null); throw new Error(detailText(d && d.detail) || `Request failed (${r.status}).`); }
       const summary = JSON.parse(r.headers.get("X-PII-Summary") || "{}");
       const blob = await r.blob();
@@ -688,7 +650,6 @@ async function pageTry(c) {
     el("div", { class: "grid cols-2" },
       el("div", { class: "card" }, el("div", { class: "card-head" }, el("h2", {}, "Input")),
         el("div", { class: "card-body" },
-          el("div", { class: "grid cols-2" }, el("label", { class: "f" }, el("span", { class: "t" }, "Mode"), mode), el("label", { class: "f" }, el("span", { class: "t" }, "Scope"), scope, el("span", { class: "h" }, "Used by tokenise and unmask."))),
           el("label", { class: "f" }, el("span", { class: "t" }, "Text"), text),
           el("label", { class: "f" }, el("span", { class: "t" }, "Options (JSON, optional)"), optsText, el("span", { class: "h" }, "Per-request overrides: types, threshold, mask_names, keywords, allow_list, fields.")),
           el("button", { class: "btn primary", type: "button", onclick: run }, "Run on text"),
@@ -698,7 +659,7 @@ async function pageTry(c) {
       el("div", { class: "card" }, el("div", { class: "card-head" }, el("h2", {}, "Result")), el("div", { class: "card-body" }, out, meta))));
 }
 
-const PAGES = { overview: pageOverview, fields: pageFields, detection: pageDetection, keys: pageKeys, audit: pageAudit, vault: pageVault, check: pageCheck, tryit: pageTry };
+const PAGES = { overview: pageOverview, fields: pageFields, detection: pageDetection, keys: pageKeys, audit: pageAudit, check: pageCheck, tryit: pageTry };
 
 // ---- start -----------------------------------------------------------------------------------------------------------------
 (async function start() {

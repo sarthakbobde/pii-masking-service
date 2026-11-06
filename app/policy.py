@@ -257,7 +257,7 @@ def current(db: Database | None = None) -> dict:
 
 
 def protection_on(db: Database | None = None) -> bool:
-    """The master switch: when off, mask and tokenise pass text and files through unchanged (unmask still works)."""
+    """The master switch: when off, masking passes text and files through unchanged."""
     return bool(_load(db or get_db())[0]["protection_enabled"])
 
 

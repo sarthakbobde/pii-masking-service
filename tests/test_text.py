@@ -3,7 +3,8 @@ import json
 from sqlalchemy import select
 
 from app import detect
-from app.db import AuditEntry, VaultEntry, get_db
+from app.db import AuditEntry, get_db
+from tests.conftest import ADMIN
 
 EMAIL = "john.doe@acme.com"
 TEXT = f"Mail {EMAIL} or call +91 98765 43210. Salary: 12,40,000. PAN ABCDE1234F."
@@ -11,7 +12,7 @@ TEXT = f"Mail {EMAIL} or call +91 98765 43210. Salary: 12,40,000. PAN ABCDE1234F
 
 def test_health_needs_no_key(client):
     r = client.get("/healthz")
-    assert r.json()["database"] is True and r.json()["vault"] is True
+    assert r.json()["database"] is True and "vault" not in r.json()
 
 
 def test_key_required(client):
@@ -53,38 +54,7 @@ def test_overrides_can_be_switched_off(client, make_key):
     assert r.status_code == 403
 
 
-def test_tokenise_is_deterministic_per_scope_and_reversible(client, make_key):
-    h = make_key(["tokenise", "unmask"], ["team-a", "team-b"])
-    a1 = client.post("/v1/tokenise", headers=h, json={"text": TEXT}).json()
-    a2 = client.post("/v1/tokenise", headers=h, json={"text": f"Again {EMAIL.upper()}"}).json()
-    b = client.post("/v1/tokenise", headers=h, json={"text": TEXT, "scope": "team-b"}).json()
-    assert a1["scope"] == "team-a" and EMAIL not in a1["text"]
-    token = a1["findings"][0]["replacement"]
-    assert token.startswith("<EMAIL_ADDRESS_") and token in a2["text"]
-    assert token not in b["text"]
-    back = client.post("/v1/unmask", headers=h, json={"text": a1["text"]}).json()
-    assert back["text"] == TEXT and back["total"] == 4 and back["unknown_tokens"] == 0
-    other = client.post("/v1/unmask", headers=h, json={"text": a1["text"], "scope": "team-b"}).json()
-    assert other["text"] == a1["text"] and other["unknown_tokens"] == 4
 
-
-def test_vault_holds_no_plain_values(client, make_key):
-    client.post("/v1/tokenise", headers=make_key(["tokenise"]), json={"text": TEXT})
-    with get_db().session() as s:
-        rows = s.scalars(select(VaultEntry)).all()
-    assert rows and all(EMAIL not in (r.value_encrypted + r.value_hash + r.token) for r in rows)
-
-
-def test_permissions_and_scopes(client, make_key):
-    h = make_key(["mask"], ["team-a"])
-    assert client.post("/v1/tokenise", headers=h, json={"text": TEXT}).status_code == 403
-    assert client.post("/v1/unmask", headers=h, json={"text": TEXT}).status_code == 403
-    assert client.get("/v1/admin/keys", headers=h).status_code == 403
-    t = make_key(["tokenise"], ["team-a"])
-    assert client.post("/v1/tokenise", headers=t, json={"text": TEXT, "scope": "team-b"}).status_code == 403
-    anyscope = make_key(["tokenise"], ["*"])
-    assert client.post("/v1/tokenise", headers=anyscope, json={"text": TEXT}).status_code == 403   # no default scope
-    assert client.post("/v1/tokenise", headers=anyscope, json={"text": TEXT, "scope": "x"}).status_code == 200
 
 
 def test_rate_limit(client, make_key):
@@ -115,3 +85,20 @@ def test_text_length_limit(client, make_key, monkeypatch):
     from app.config import config
     monkeypatch.setattr(config, "max_text_chars", 10)
     assert client.post("/v1/mask", headers=make_key(["mask"]), json={"text": "x" * 11}).status_code == 413
+
+
+
+def test_only_masking_is_offered(client, make_key):
+    """There is no way to put a hidden value back: those endpoints and permissions do not exist."""
+    h = make_key(["mask"])
+    for path in ("/v1/tokenise", "/v1/unmask", "/v1/files/tokenise", "/v1/files/unmask", "/v1/admin/vault"):
+        assert client.post(path, headers=h, json={"text": TEXT}).status_code in (404, 405), path
+    r = client.post("/v1/admin/keys", headers=ADMIN, json={"name": "old-style", "permissions": ["unmask"]})
+    assert r.status_code == 400
+    assert client.post("/v1/mask", headers=h, json={"text": TEXT}).json()["text"].count("<") >= 3
+
+
+def test_permissions(client, make_key):
+    h = make_key(["mask"])
+    assert client.get("/v1/admin/keys", headers=h).status_code == 403
+    assert client.post("/v1/admin/check", headers=h, files={"file": ("a.txt", b"x")}).status_code == 403

@@ -1,7 +1,7 @@
 """PDF: true redaction with PyMuPDF.
 
 For each text block we rebuild its text from the words on the page, find what to replace, and add a redaction
-annotation over the words concerned, carrying the label or token as its overlay text. Applying the redactions removes
+annotation over the words concerned, carrying the label as its overlay text. Applying the redactions removes
 those characters from the page's content stream (and blanks image pixels underneath): the value is gone from the file,
 not hidden under a box. Whole words are redacted, so punctuation stuck to a value ("(john@x.com)") goes with it.
 
@@ -9,7 +9,7 @@ Scanned pages (images with next to no text) are read with OCR when Tesseract lan
 switched on; the image pixels under each value are blanked. Without OCR they are reported as unprocessed.
 Also: links over redacted areas are removed; metadata, XMP, attachments, JavaScript and thumbnails are scrubbed.
 Not covered: personal data inside images on pages that also have real text, form-field values, and annotations' text.
-Encrypted PDFs are refused. Tokenised PDFs cannot be unmasked (the original text is gone).
+Encrypted PDFs are refused.
 """
 import logging
 import os
@@ -84,8 +84,6 @@ def _redact_words(page, words, r: Redactor) -> list:
 
 def pdf(data: bytes, r: Redactor) -> tuple[bytes, dict]:
     import pymupdf
-    if r.mode == "unmask":
-        raise UnsupportedFile("A PDF cannot be unmasked: its original text was removed when it was tokenised.")
     try:
         doc = pymupdf.open(stream=data, filetype="pdf")
     except Exception:
