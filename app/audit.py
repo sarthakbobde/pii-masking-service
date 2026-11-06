@@ -1,4 +1,4 @@
-"""The audit log: who called what, how it went and how many values of each type were hidden. Never a value."""
+"""The audit log: who called what (by address), how it went and how many values of each type were hidden. Never a value."""
 import logging
 from datetime import datetime, timedelta
 
@@ -14,7 +14,7 @@ def record(caller, operation: str, status: int, counts: dict | None = None, deta
     counts = dict(counts or {})
     try:
         with (db or get_db()).session() as s:
-            s.add(AuditEntry(key_id=getattr(caller, "id", None), key_name=getattr(caller, "name", "") or "",
+            s.add(AuditEntry(key_name=getattr(caller, "name", "") or "",
                              operation=operation, status=status, counts=counts,
                              total=sum(counts.values()), detail=detail[:200], duration_ms=duration_ms))
     except Exception:
@@ -41,16 +41,16 @@ def summary(hours: int = 24, db: Database | None = None) -> dict:
             "by_operation": dict(sorted(by_op.items(), key=lambda kv: -kv[1]))}
 
 
-def entries(key_name: str | None = None, operation: str | None = None, since: datetime | None = None, limit: int = 100,
+def entries(caller: str | None = None, operation: str | None = None, since: datetime | None = None, limit: int = 100,
             db: Database | None = None) -> list[dict]:
     q = select(AuditEntry).order_by(AuditEntry.id.desc()).limit(max(1, min(limit, 1000)))
-    if key_name:
-        q = q.where(AuditEntry.key_name == key_name)
+    if caller:
+        q = q.where(AuditEntry.key_name == caller)
     if operation:
         q = q.where(AuditEntry.operation == operation)
     if since:
         q = q.where(AuditEntry.at >= since)
     with (db or get_db()).session() as s:
-        return [{"id": e.id, "at": e.at, "key": e.key_name, "operation": e.operation, "status": e.status,
+        return [{"id": e.id, "at": e.at, "caller": e.key_name, "operation": e.operation, "status": e.status,
                  "counts": e.counts, "total": e.total, "detail": e.detail, "duration_ms": e.duration_ms}
                 for e in s.scalars(q)]

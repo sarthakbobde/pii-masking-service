@@ -42,9 +42,9 @@ def error(r, status, code):
     return body["error"]["message"]
 
 
-def test_mask_a_docx_end_to_end(client, make_key):
+def test_mask_a_docx_end_to_end(client):
     import docx
-    h = make_key(["mask"])
+    h = {}
     r = submit(client, h, output_filename="ACME_MSA_20.docx")
     assert r.status_code == 200, r.text
     job = r.json()
@@ -68,9 +68,9 @@ def test_mask_a_docx_end_to_end(client, make_key):
     assert EMAIL.encode() not in dl.content
 
 
-def test_mask_a_pdf_in_the_same_format(client, make_key):
+def test_mask_a_pdf_in_the_same_format(client):
     import pymupdf
-    h = make_key(["mask"])
+    h = {}
     job = submit(client, h, name="contract.pdf", data=make_pdf()).json()
     assert job["output_filename"] == "contract_Masked.pdf" and job["pages"] == 1          # the default name
     dl = client.get(f"{URL}/{job['job_id']}/download", headers=h)
@@ -79,38 +79,38 @@ def test_mask_a_pdf_in_the_same_format(client, make_key):
     assert "<EMAIL_ADDRESS>" in text and EMAIL not in text and EMAIL.encode() not in dl.content
 
 
-def test_output_filename_is_made_safe(client, make_key):
-    h = make_key(["mask"])
+def test_output_filename_is_made_safe(client):
+    h = {}
     out = submit(client, h, output_filename="..\\..\\evil\"name\r\n.txt").json()["output_filename"]
     assert out.endswith(".docx") and "/" not in out and "\\" not in out and '"' not in out and "\n" not in out
     assert submit(client, h, output_filename="Report").json()["output_filename"] == "Report.docx"
 
 
-def test_validation_errors(client, make_key):
-    h = make_key(["mask"])
+def test_validation_errors(client):
+    h = {}
     assert error(submit(client, h, version=None), 400, "VALIDATION_ERROR") == "version is required"
     assert error(submit(client, h, contract_id=None), 400, "VALIDATION_ERROR") == "contract_id is required"
     error(submit(client, h, version="2.0\r\nX-Evil: 1"), 400, "VALIDATION_ERROR")
     error(client.post(URL, headers=h, data={"contract_id": "C-1", "version": "1"}), 400, "VALIDATION_ERROR")   # no file
 
 
-def test_empty_and_unsupported_files(client, make_key):
-    h = make_key(["mask"])
+def test_empty_and_unsupported_files(client):
+    h = {}
     assert error(submit(client, h, data=b""), 400, "EMPTY_FILE") == "Uploaded file is empty"
     msg = error(submit(client, h, name="prices.xlsx", data=b"x"), 400, "UNSUPPORTED_MEDIA_TYPE")
     assert msg == "File type .xlsx is not supported. Accepted: .docx, .pdf"
     error(submit(client, h, name="archive", data=b"x"), 400, "UNSUPPORTED_MEDIA_TYPE")
 
 
-def test_too_large(client, make_key, monkeypatch):
+def test_too_large(client, monkeypatch):
     from app.config import config
     monkeypatch.setattr(config, "max_upload_mb", 0)
-    assert error(submit(client, make_key(["mask"])), 413, "PAYLOAD_TOO_LARGE") == "File exceeds maximum allowed size of 0 MB"
+    assert error(submit(client, {}), 413, "PAYLOAD_TOO_LARGE") == "File exceeds maximum allowed size of 0 MB"
 
 
-def test_unreadable_documents(client, make_key):
+def test_unreadable_documents(client):
     import pymupdf
-    h = make_key(["mask"])
+    h = {}
     msg = "Document could not be read."
     assert error(submit(client, h, data=b"PK\x03\x04 not really a docx"), 422, "UNREADABLE_DOCUMENT").startswith(msg)
     error(submit(client, h, name="a.pdf", data=b"%PDF-1.4 garbage"), 422, "UNREADABLE_DOCUMENT")
@@ -121,27 +121,19 @@ def test_unreadable_documents(client, make_key):
     error(submit(client, h, name="blank.pdf", data=make_pdf("")), 422, "UNREADABLE_DOCUMENT")      # nothing to read
 
 
-def test_masking_failure_returns_no_file(client, make_key, monkeypatch):
+def test_masking_failure_returns_no_file(client, monkeypatch):
     from app import files
     def boom(*a, **k):
         raise RuntimeError("detector down")
     monkeypatch.setattr(files, "process", boom)
-    msg = error(submit(client, make_key(["mask"])), 500, "MASKING_FAILED")
+    msg = error(submit(client, {}), 500, "MASKING_FAILED")
     assert "Contact support" in msg and EMAIL not in msg
 
 
-def test_a_job_belongs_to_the_key_that_made_it(client, make_key):
-    a, b = make_key(["mask"]), make_key(["mask"])
-    job_id = submit(client, a).json()["job_id"]
-    assert client.get(f"{URL}/{job_id}/status", headers=a).status_code == 200
-    assert error(client.get(f"{URL}/{job_id}/status", headers=b), 404, "JOB_NOT_FOUND") == f"No job found with id {job_id}"
-    error(client.get(f"{URL}/{job_id}/download", headers=b), 404, "JOB_NOT_FOUND")
-    error(client.get(f"{URL}/mask-doesnotexist/status", headers=a), 404, "JOB_NOT_FOUND")
 
-
-def test_jobs_expire_and_the_store_is_bounded(client, make_key, monkeypatch):
+def test_jobs_expire_and_the_store_is_bounded(client, monkeypatch):
     from app.config import config
-    h = make_key(["mask"])
+    h = {}
     job_id = submit(client, h).json()["job_id"]
     monkeypatch.setattr(config, "job_ttl_minutes", 60)
     jobs.store._jobs[job_id].expires = 0          # as if the time was up
@@ -153,19 +145,9 @@ def test_jobs_expire_and_the_store_is_bounded(client, make_key, monkeypatch):
     assert client.get(f"{URL}/{second}/status", headers=h).status_code == 200
 
 
-def test_errors_for_keys_use_the_same_format(client, make_key):
-    error(client.post(URL, files={"file": ("a.docx", make_docx())}, data={"contract_id": "C", "version": "1"}), 401, "UNAUTHORIZED")
-    admin_only = client.post("/v1/admin/keys", headers=ADMIN, json={"name": "just-admin", "permissions": ["admin"]}).json()["key"]
-    error(submit(client, {"X-API-Key": admin_only}), 403, "FORBIDDEN")
-    limited = make_key(["mask"], rate_limit=1)
-    submit(client, limited)
-    r = submit(client, limited)
-    error(r, 429, "RATE_LIMITED")
-    assert "retry-after" in r.headers
 
-
-def test_protection_off_returns_the_file_unchanged_and_says_so(client, make_key):
-    h = make_key(["mask"])
+def test_protection_off_returns_the_file_unchanged_and_says_so(client):
+    h = {}
     data = make_docx()
     try:
         client.put("/v1/admin/settings", headers=ADMIN, json={"protection_enabled": False})
@@ -177,9 +159,23 @@ def test_protection_off_returns_the_file_unchanged_and_says_so(client, make_key)
         client.put("/v1/admin/settings", headers=ADMIN, json={"protection_enabled": True})
 
 
-def test_the_audit_log_has_counts_and_the_contract_but_no_values(client, make_key):
-    h = make_key(["mask"])
+def test_the_audit_log_has_counts_and_the_contract_but_no_values(client):
+    h = {}
     submit(client, h)
     entry = client.get("/v1/admin/audit", headers=ADMIN, params={"operation": "cms_mask", "limit": 1}).json()[0]
     assert entry["status"] == 200 and entry["total"] == 3 and "CMS-CONTRACT-12345" in entry["detail"]
+    assert entry["caller"] == "testclient"
     assert EMAIL not in str(entry) and "12,40,000" not in str(entry)
+
+
+def test_no_key_is_needed_and_job_ids_cannot_be_guessed(client):
+    job_id = submit(client, {}).json()["job_id"]
+    assert len(job_id) == len("mask-") + 24
+    assert client.get(f"{URL}/{job_id}/status").status_code == 200
+    error(client.get(f"{URL}/mask-000000000000000000000000/status"), 404, "JOB_NOT_FOUND")
+    error(client.get(f"{URL}/mask-000000000000000000000000/download"), 404, "JOB_NOT_FOUND")
+
+
+def test_unexpected_routes_use_the_same_error_format(client):
+    error(client.get("/api/v1/documents/nothing"), 404, "NOT_FOUND")
+    error(client.delete(URL), 405, "METHOD_NOT_ALLOWED")

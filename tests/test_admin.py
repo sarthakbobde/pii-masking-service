@@ -11,15 +11,15 @@ def test_settings_read_and_validate(client):
     assert r.json()["settings"]["sensitive_keywords"] == ["Employee id"]
 
 
-def test_settings_apply_to_requests(client, make_key):
-    h = make_key(["mask"])
+def test_settings_apply_to_requests(client):
+    h = {}
     client.put("/v1/admin/settings", headers=ADMIN, json={"enabled_types": ["PHONE_NUMBER"], "keywords_enabled": False})
     r = client.post("/v1/mask", headers=h, json={"text": "a@b.com, Salary: 10. Call +91 98765 43210."})
     assert r.json()["text"] == "a@b.com, Salary: 10. Call <PHONE_NUMBER>."
 
 
-def test_custom_types(client, make_key):
-    h = make_key(["mask"])
+def test_custom_types(client):
+    h = {}
     bad = client.post("/v1/admin/custom-types", headers=ADMIN, json={"name": "EMAIL_ADDRESS", "pattern": "x"})
     assert bad.status_code == 400
     assert client.post("/v1/admin/custom-types", headers=ADMIN, json={"name": "X", "pattern": "a*"}).status_code == 400
@@ -38,26 +38,6 @@ def test_custom_types(client, make_key):
     assert t.json()["matches"] == ["1", "22"]
 
 
-def test_keys_lifecycle(client):
-    r = client.post("/v1/admin/keys", headers=ADMIN, json={"name": "billing", "permissions": ["mask"]})
-    assert r.status_code == 201
-    info, key = r.json(), r.json()["key"]
-    assert key.startswith("pii_") and info["rate_limit"] == 120
-    listed = client.get("/v1/admin/keys", headers=ADMIN).json()
-    assert any(k["name"] == "billing" for k in listed) and all("key" not in k and "key_hash" not in k for k in listed)
-    assert client.post("/v1/admin/keys", headers=ADMIN, json={"name": "billing", "permissions": ["mask"]}).status_code == 409
-    assert client.post("/v1/admin/keys", headers=ADMIN, json={"name": "y", "permissions": ["fly"]}).status_code == 400
-    h = {"Authorization": f"Bearer {key}"}
-    assert client.post("/v1/mask", headers=h, json={"text": "hi"}).status_code == 200
-    client.patch(f"/v1/admin/keys/{info['id']}", headers=ADMIN, json={"permissions": ["admin"]})
-    assert client.post("/v1/mask", headers=h, json={"text": "hi"}).status_code == 403
-    assert client.delete(f"/v1/admin/keys/{info['id']}", headers=ADMIN).json()["active"] is False
-    assert client.post("/v1/mask", headers=h, json={"text": "hi"}).status_code == 401
-
-
-
-def test_admin_needs_admin(client, make_key):
-    assert client.get("/v1/admin/settings", headers=make_key(["mask"])).status_code == 403
 
 
 def test_settings_file_seeds_a_new_database(tmp_path, monkeypatch):
@@ -76,8 +56,47 @@ def test_settings_file_seeds_a_new_database(tmp_path, monkeypatch):
     policy.invalidate()
 
 
-def test_audit_log_lists_calls_with_counts(client, make_key):
-    h = make_key(["mask"])
+def test_audit_log_lists_calls_with_counts(client):
+    h = {}
     client.post("/v1/mask", headers=h, json={"text": "Mail x.y@corp.com"})
     log = client.get("/v1/admin/audit", headers=ADMIN, params={"operation": "mask", "limit": 5}).json()
-    assert log and log[0]["counts"] == {"EMAIL_ADDRESS": 1} and "scope" not in log[0]
+    assert log and log[0]["counts"] == {"EMAIL_ADDRESS": 1} and log[0]["caller"] == "testclient" and "key" not in log[0]
+
+
+def test_admin_needs_the_admin_key(client):
+    assert client.get("/v1/admin/settings").status_code == 401
+    assert client.get("/v1/admin/settings", headers={"X-API-Key": "wrong"}).status_code == 401
+    assert client.get("/v1/admin/settings", headers={"X-API-Key": ADMIN["Authorization"][7:]}).status_code == 200
+    assert client.get("/v1/admin/settings", headers=ADMIN).status_code == 200
+    assert client.get("/v1/admin/audit").status_code == 401 and client.post("/v1/admin/check").status_code == 401
+
+
+def test_admin_without_a_key_answers_only_from_the_server_itself(client, monkeypatch):
+    from app.config import config
+    monkeypatch.setattr(config, "admin_key", "")
+    r = client.get("/v1/admin/settings")                                 # the test client is not on the server
+    assert r.status_code == 403 and "PII_ADMIN_KEY" in r.json()["detail"]
+    assert client.get("/v1/admin/overview", headers={"X-Forwarded-For": "10.0.0.5"}).status_code == 403
+
+
+def test_admin_without_a_key_works_on_loopback_but_not_behind_a_proxy(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.config import config
+    from app.main import app
+    monkeypatch.setattr(config, "admin_key", "")
+    with TestClient(app, client=("127.0.0.1", 50000)) as local:
+        assert local.get("/v1/admin/overview").status_code == 200
+        assert local.get("/v1/admin/overview", headers={"X-Forwarded-For": "203.0.113.9"}).status_code == 403
+        assert local.get("/v1/admin/overview", headers={"Forwarded": "for=203.0.113.9"}).status_code == 403
+        assert local.get("/admin").status_code == 200
+
+
+def test_a_short_admin_key_is_refused_at_start(monkeypatch):
+    import pytest
+
+    from app import auth
+    from app.config import config
+    monkeypatch.setattr(config, "admin_key", "too-short")
+    with pytest.raises(RuntimeError):
+        auth.check_config()

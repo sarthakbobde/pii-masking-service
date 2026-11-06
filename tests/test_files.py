@@ -109,8 +109,8 @@ def make_scanned_pdf() -> bytes:
 
 
 # ---- tests ----------------------------------------------------------------------------------------------------------------
-def test_text_and_markdown(client, make_key):
-    h = make_key(["mask"])
+def test_text_and_markdown(client):
+    h = {}
     r = _post(client, h, "mask", "notes.md", f"# Notes\n\n{LINE}\n".encode())
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/markdown")
     assert r.content.decode() == "# Notes\n\nContact <EMAIL_ADDRESS> or <PHONE_NUMBER> today.\n"
@@ -118,14 +118,14 @@ def test_text_and_markdown(client, make_key):
     assert _summary(r)["counts"] == {"EMAIL_ADDRESS": 1, "PHONE_NUMBER": 1}
 
 
-def test_csv_keyword_column(client, make_key):
+def test_csv_keyword_column(client):
     data = b"name,email,salary\nAsha,asha@corp.org,1200000\n"
-    r = _post(client, make_key(["mask"]), "mask", "people.csv", data)
+    r = _post(client, {}, "mask", "people.csv", data)
     assert r.content.decode().splitlines() == ["name,email,salary", "Asha,<EMAIL_ADDRESS>,<SENSITIVE_VALUE>"]
 
 
-def test_docx_mask_keeps_formatting_and_clears_author(client, make_key):
-    r = _post(client, make_key(["mask"]), "mask", "letter.docx", make_docx())
+def test_docx_mask_keeps_formatting_and_clears_author(client):
+    r = _post(client, {}, "mask", "letter.docx", make_docx())
     assert r.status_code == 200
     text = docx_text(r.content)
     assert EMAIL not in text and "john.doe" not in text and "jane@corp.org" not in text and "mary@corp.org" not in text
@@ -137,16 +137,16 @@ def test_docx_mask_keeps_formatting_and_clears_author(client, make_key):
 
 
 
-def test_pptx(client, make_key):
-    r = _post(client, make_key(["mask"]), "mask", "deck.pptx", make_pptx())
+def test_pptx(client):
+    r = _post(client, {}, "mask", "deck.pptx", make_pptx())
     text = pptx_text(r.content)
     assert "Contact <EMAIL_ADDRESS> or <PHONE_NUMBER> today." in text and "jane@corp.org" not in text
     assert "Team contacts" in text
 
 
-def test_xlsx(client, make_key):
+def test_xlsx(client):
     import openpyxl
-    r = _post(client, make_key(["mask"]), "mask", "staff.xlsx", make_xlsx())
+    r = _post(client, {}, "mask", "staff.xlsx", make_xlsx())
     ws = openpyxl.load_workbook(io.BytesIO(r.content)).active
     rows = [[c.value for c in row] for row in ws.iter_rows()]
     assert rows[0] == ["Name", "Email", "DOB", "Score"]                             # headers stay readable
@@ -156,10 +156,10 @@ def test_xlsx(client, make_key):
     assert rows[5][1] == "=SUM(D2:D3)"                                              # formulas untouched
 
 
-def test_pdf_true_redaction(client, make_key):
+def test_pdf_true_redaction(client):
     import pymupdf
     src = make_pdf([LINE, "Salary: 12,40,000.", "Nothing to see here."])
-    r = _post(client, make_key(["mask"]), "mask", "report.pdf", src)
+    r = _post(client, {}, "mask", "report.pdf", src)
     assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
     doc = pymupdf.open(stream=r.content, filetype="pdf")
     text = doc[0].get_text()
@@ -172,17 +172,17 @@ def test_pdf_true_redaction(client, make_key):
 
 
 
-def test_scanned_pdf_without_ocr_is_reported(client, make_key):
+def test_scanned_pdf_without_ocr_is_reported(client):
     from tests.conftest import ADMIN
     client.put("/v1/admin/settings", headers=ADMIN, json={"ocr_enabled": False})
-    r = _post(client, make_key(["mask"]), "mask", "scan.pdf", make_scanned_pdf())
+    r = _post(client, {}, "mask", "scan.pdf", make_scanned_pdf())
     assert r.status_code == 200 and _summary(r)["unprocessed_image_pages"] == [1]
 
 
 @pytest.mark.skipif(tessdata() is None, reason="Tesseract language data not installed (set PII_TESSDATA_DIR)")
-def test_scanned_pdf_with_ocr(client, make_key):
+def test_scanned_pdf_with_ocr(client):
     import pymupdf
-    r = _post(client, make_key(["mask"]), "mask", "scan.pdf", make_scanned_pdf())
+    r = _post(client, {}, "mask", "scan.pdf", make_scanned_pdf())
     s = _summary(r)
     assert s["ocr_pages"] == [1] and s["counts"].get("EMAIL_ADDRESS") == 1
     page = pymupdf.open(stream=r.content, filetype="pdf")[0]
@@ -190,8 +190,8 @@ def test_scanned_pdf_with_ocr(client, make_key):
     assert "acme" not in page.get_text(textpage=ocr)
 
 
-def test_file_checks(client, make_key):
-    h = make_key(["mask"])
+def test_file_checks(client):
+    h = {}
     assert _post(client, h, "mask", "virus.exe", b"MZ").status_code == 415
     assert _post(client, h, "mask", "fake.pdf", b"hello").status_code == 415
     assert _post(client, h, "mask", "fake.docx", b"PK\x03\x04nope").status_code == 415
@@ -199,10 +199,10 @@ def test_file_checks(client, make_key):
     assert _post(client, h, "mask", "x.txt", b"hi", options="[1]").status_code == 400
 
 
-def test_upload_limit(client, make_key, monkeypatch):
+def test_upload_limit(client, monkeypatch):
     from app.config import config
     monkeypatch.setattr(config, "max_upload_mb", 0)
-    assert _post(client, make_key(["mask"]), "mask", "x.txt", b"hello").status_code == 413
+    assert _post(client, {}, "mask", "x.txt", b"hello").status_code == 413
 
 
 def test_table_keywords_headers_and_key_value_rows():

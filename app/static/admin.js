@@ -1,6 +1,6 @@
 "use strict";
 /* Admin page for the PII masking service. Plain JavaScript, no build step.
-   Everything shown is put on the page as text (never as HTML), and the admin key lives in this tab's sessionStorage only. */
+   Everything shown is put on the page as text (never as HTML), and the admin key, when the server asks for one, lives in this tab's sessionStorage only. */
 
 const root = document.getElementById("app");
 const state = { key: "", overview: null, ui: {} };
@@ -32,7 +32,6 @@ const ICONS = {
   overview: '<path d="M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"/>',
   fields: '<path d="M4 6h16M4 12h16M4 18h10"/>',
   detection: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
-  keys: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l2 2"/>',
   audit: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   check: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 14l2 2 4-4"/>',
   tryit: '<path d="M9 3h6M10 3v6l-5 9a2 2 0 002 3h10a2 2 0 002-3l-5-9V3"/>',
@@ -72,12 +71,13 @@ function detailText(d) {
 }
 
 async function api(method, path, body, raw) {
-  const headers = { "X-API-Key": state.key };
+  const headers = state.key ? { "X-API-Key": state.key } : {};
   let payload;
   if (body instanceof FormData) payload = body;
   else if (body !== undefined) { headers["Content-Type"] = "application/json"; payload = JSON.stringify(body); }
   const r = await fetch(path, { method, headers, body: payload });
-  if (r.status === 401) { signOut("That key was not accepted."); throw new Error("Signed out."); }
+  if (r.status === 401) { signOut(state.key ? "That admin key was not accepted." : ""); throw new Error("Signed out."); }
+  if (r.status === 403 && !state.key) { renderLocalOnly(); throw new Error("Signed out."); }
   if (raw) return r;
   const data = await r.json().catch(() => null);
   if (!r.ok) throw new Error(detailText(data && data.detail) || `Request failed (${r.status}).`);
@@ -130,7 +130,7 @@ function signOut(message) {
 }
 
 function renderLogin(message) {
-  const input = el("input", { type: "password", autocomplete: "off", placeholder: "pii_…", "aria-label": "Admin API key" });
+  const input = el("input", { type: "password", autocomplete: "off", placeholder: "Admin key", "aria-label": "Admin key" });
   const err = el("p", { class: "hint", role: "alert" }, message || "");
   err.style.color = "var(--bad)";
   const go = async () => {
@@ -140,17 +140,22 @@ function renderLogin(message) {
       await api("GET", "/v1/admin/overview");
       try { sessionStorage.setItem("pii_admin_key", state.key); } catch (_) { /* ignore */ }
       renderShell();
-    } catch (e) {
-      if (e.message !== "Signed out.") { err.textContent = e.message.includes("admin") ? "This key is valid but lacks the admin permission." : e.message; state.key = ""; }
-    }
+    } catch (e) { if (e.message !== "Signed out.") { err.textContent = e.message; state.key = ""; } }
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
   root.replaceChildren(el("div", { class: "login" }, el("div", { class: "box" },
     el("div", { class: "brand" }, logo(), el("div", {}, el("b", {}, "PII Masking Service"), el("span", {}, "Administration"))),
-    el("label", { class: "f" }, el("span", { class: "t" }, "Admin API key"), input,
-      el("span", { class: "h" }, "Use a key with the admin permission. It stays in this browser tab and is cleared when you close it.")),
+    el("label", { class: "f" }, el("span", { class: "t" }, "Admin key"), input,
+      el("span", { class: "h" }, "Set by whoever runs this service (PII_ADMIN_KEY). It stays in this browser tab and is cleared when you close it.")),
     err, el("button", { class: "btn primary", type: "button", style: "width:100%;justify-content:center", onclick: go }, "Sign in"))));
   input.focus();
+}
+
+function renderLocalOnly() {
+  root.replaceChildren(el("div", { class: "login" }, el("div", { class: "box" },
+    el("div", { class: "brand" }, logo(), el("div", {}, el("b", {}, "PII Masking Service"), el("span", {}, "Administration"))),
+    el("p", {}, "The admin page is available only on the server itself."),
+    el("p", { class: "hint", style: "margin-top:8px" }, "To use it from another computer, set PII_ADMIN_KEY on the server and restart it. You will then sign in here with that key. The masking API is not affected: it needs no key."))));
 }
 
 function logo() {
@@ -160,7 +165,7 @@ function logo() {
 }
 
 // ---- shell -----------------------------------------------------------------------------------------------------------------
-const NAV = [["overview", "Overview"], ["fields", "Fields to hide"], ["detection", "Detection settings"], ["keys", "API keys"],
+const NAV = [["overview", "Overview"], ["fields", "Fields to hide"], ["detection", "Detection settings"],
   ["audit", "Audit log"], ["check", "Check a document"], ["tryit", "Try it"]];
 let content, topbar;
 
@@ -172,8 +177,8 @@ function renderShell() {
   root.replaceChildren(el("div", { class: "shell" },
     el("aside", { class: "side" },
       el("div", { class: "brand" }, logo(), el("div", {}, el("b", {}, "PII Masking"), el("span", {}, "Administration"))), nav,
-      el("div", { class: "side-foot" }, "Signed in with an admin key",
-        el("button", { class: "btn small", type: "button", onclick: () => signOut() }, "Sign out"))),
+      el("div", { class: "side-foot" }, state.key ? "Signed in with the admin key" : "On the server itself: no key needed",
+        state.key ? el("button", { class: "btn small", type: "button", onclick: () => signOut() }, "Sign out") : null)),
     el("div", { class: "main" }, topbar, content)));
   show();
 }
@@ -253,7 +258,7 @@ async function pageOverview(c) {
       tile("Requests, 24 h", fmt(d.calls), `${fmt(d.errors)} failed or refused`),
       tile("Values hidden, 24 h", fmt(d.values), "across all callers"),
       tile("Fields", `${n.fields_enabled} / ${n.fields}`, `${fmt(n.field_values)} known values`),
-      tile("Active API keys", fmt(n.active_keys), `${n.custom_types} custom type(s)`)),
+      tile("Custom types", fmt(n.custom_types), "your own patterns")),
     el("div", { class: "grid cols-2" },
       el("div", { class: "card" }, el("div", { class: "card-head" }, el("h2", {}, "Most hidden types, 24 h")),
         el("div", { class: "card-body" }, bars.length
@@ -265,7 +270,7 @@ async function pageOverview(c) {
           hl("Detector", h.detector === "ready" ? pill("ok", "Ready") : pill(h.detector === "loading" ? "warn" : "bad", h.detector)),
           hl("Database", h.database ? pill("ok", "Connected") : pill("bad", "Down")),
           hl("OCR", h.ocr ? pill("ok", "Available") : pill("off", "Not installed"))),
-        el("p", { class: "hint", style: "margin-top:12px" }, `Limits: text up to ${fmt(o.limits.max_text_chars)} characters, files up to ${o.limits.max_upload_mb} MB, ${o.limits.default_rate_limit} requests a minute by default.`)))),
+        el("p", { class: "hint", style: "margin-top:12px" }, `Limits: text up to ${fmt(o.limits.max_text_chars)} characters, files up to ${o.limits.max_upload_mb} MB. The masking API needs no key.`)))),
     el("div", { class: "card" }, el("div", { class: "card-head" }, el("h2", {}, "Recent activity"), el("a", { class: "btn small", href: "#/audit" }, "Open audit log")),
       auditTable(recent)));
 }
@@ -446,69 +451,13 @@ function customModal(t) {
   openModal({ title: isNew ? "Add a custom type" : "Edit " + t.name, body, buttons });
 }
 
-// ---- API keys --------------------------------------------------------------------------------------------------------------
-const PERMS = [["mask", "Use the masking API (text and documents, one-way)"], ["admin", "Administer this service"]];
-
-async function pageKeys(c) {
-  const keys = await api("GET", "/v1/admin/keys");
-  put(c, head("API keys", "One key per calling system, each with its own permissions and rate limit. Keys are stored only as hashes.",
-    el("button", { class: "btn primary", type: "button", onclick: () => keyModal(null) }, "+ Create key")),
-    el("div", { class: "card" }, el("div", { class: "table-wrap" }, el("table", {},
-      el("thead", {}, el("tr", {}, ["Name", "Key", "Permissions", "Rate / min", "Last used", "Status", ""].map((t) => el("th", {}, t)))),
-      el("tbody", {}, keys.map((k) => el("tr", { style: k.active ? "" : "opacity:.6" },
-        el("td", {}, el("b", {}, k.name), el("div", { class: "muted" }, "by " + (k.created_by || "system"))),
-        el("td", {}, el("code", {}, k.prefix + "…")),
-        el("td", {}, el("div", { class: "chips" }, k.permissions.map((p) => el("span", { class: "chip" + (p === "admin" ? " teal" : "") }, p)))),
-        el("td", { class: "num" }, fmt(k.rate_limit)), el("td", {}, when(k.last_used_at)),
-        el("td", {}, k.active ? pill("ok", "Active") : pill("off", "Revoked")),
-        el("td", { class: "actions" }, k.active ? el("button", { class: "btn small", type: "button", onclick: () => keyModal(k) }, "Edit") : null))))))));
-}
-
-function keyModal(k) {
-  const isNew = !k;
-  const name = el("input", { type: "text", value: k ? k.name : "", placeholder: "billing-app", disabled: !isNew, maxlength: 80 });
-  const perms = new Set(k ? k.permissions : ["mask"]);
-  const rate = el("input", { type: "number", min: 1, max: 100000, value: k ? k.rate_limit : 120 });
-  const body = el("div", {},
-    el("label", { class: "f" }, el("span", { class: "t" }, "Name"), name, isNew ? el("span", { class: "h" }, "The calling system, e.g. billing-app.") : el("span", { class: "h" }, "A key's name cannot be changed.")),
-    el("div", { class: "f" }, el("span", { class: "t", style: "display:block;font-weight:600;margin-bottom:6px" }, "Permissions"),
-      PERMS.map(([p, d]) => el("label", { class: "row", style: "margin-bottom:6px;gap:8px" },
-        sw(perms.has(p), (v) => { v ? perms.add(p) : perms.delete(p); }, false, p), el("span", {}, el("b", {}, p), " · ", d)))),
-    el("label", { class: "f" }, el("span", { class: "t" }, "Requests per minute"), rate));
-  const save = async (close) => {
-    const payload = { permissions: [...perms], rate_limit: +rate.value };
-    try {
-      if (isNew) {
-        const made = await api("POST", "/v1/admin/keys", { name: name.value, ...payload });
-        close(); showKey(made); show();
-      } else { await api("PATCH", `/v1/admin/keys/${k.id}`, payload); close(); toast("Key updated."); show(); }
-    } catch (e) { fail(e); }
-  };
-  const buttons = [{ label: "Cancel", onclick: (c) => c() }, { label: isNew ? "Create key" : "Save", cls: "primary", onclick: save }];
-  if (!isNew) buttons.unshift({ label: "Revoke", cls: "danger", onclick: async (close) => {
-    if (await confirmBox({ title: "Revoke this key?", message: `${k.name} will stop working within a few seconds. This cannot be undone.`, confirm: "Revoke", danger: true })) {
-      try { await api("DELETE", `/v1/admin/keys/${k.id}`); close(); toast("Key revoked."); show(); } catch (e) { fail(e); }
-    }
-  } });
-  openModal({ title: isNew ? "Create an API key" : "Edit " + k.name, body, buttons });
-}
-
-function showKey(made) {
-  openModal({
-    title: "Key created: " + made.name,
-    body: el("div", {}, el("div", { class: "callout warn", style: "margin-bottom:12px" }, "Copy this key now. It is shown only once and cannot be retrieved later."),
-      el("div", { class: "keybox" }, el("code", {}, made.key), el("button", { class: "btn small", type: "button", onclick: () => copy(made.key) }, "Copy"))),
-    buttons: [{ label: "I have saved it", cls: "primary", onclick: (c) => c() }],
-  });
-}
-
 // ---- audit log -------------------------------------------------------------------------------------------------------------
 function auditTable(rows) {
   if (!rows.length) return el("div", { class: "empty" }, "No activity yet.");
   return el("div", { class: "table-wrap" }, el("table", {},
     el("thead", {}, el("tr", {}, ["Time", "Caller", "Operation", "Result", "Hidden", "What", "ms"].map((t, i) => el("th", { class: i === 4 || i === 6 ? "num" : "" }, t)))),
     el("tbody", {}, rows.map((e) => el("tr", {},
-      el("td", {}, when(e.at)), el("td", {}, e.key || "—"), el("td", {}, el("code", {}, e.operation)),
+      el("td", {}, when(e.at)), el("td", {}, e.caller || "—"), el("td", {}, el("code", {}, e.operation)),
       el("td", {}, e.status < 300 ? pill("ok", String(e.status)) : e.status < 500 ? pill("warn", String(e.status)) : pill("bad", String(e.status)), e.detail ? el("div", { class: "muted" }, e.detail) : null),
       el("td", { class: "num" }, fmt(e.total)),
       el("td", {}, el("div", { class: "chips" }, Object.entries(e.counts || {}).map(([k, v]) => el("span", { class: "chip" }, `${k} ${v}`)))),
@@ -516,20 +465,20 @@ function auditTable(rows) {
 }
 
 async function pageAudit(c) {
-  const f = state.ui.audit || (state.ui.audit = { key: "", operation: "", limit: "100" });
-  const key = el("input", { type: "text", placeholder: "Caller name", value: f.key, "aria-label": "Caller" });
+  const f = state.ui.audit || (state.ui.audit = { caller: "", operation: "", limit: "100" });
+  const who = el("input", { type: "text", placeholder: "Caller address or admin", value: f.caller, "aria-label": "Caller" });
   const op = el("input", { type: "text", placeholder: "Operation, e.g. file_mask", value: f.operation, "aria-label": "Operation" });
   const lim = el("select", { "aria-label": "Rows", value: f.limit }, ["50", "100", "250", "500"].map((n) => el("option", { value: n }, n + " rows")));
   const out = el("div", { class: "card" });
   const load = async () => {
-    f.key = key.value.trim(); f.operation = op.value.trim(); f.limit = lim.value;
+    f.caller = who.value.trim(); f.operation = op.value.trim(); f.limit = lim.value;
     const q = new URLSearchParams({ limit: f.limit });
-    if (f.key) q.set("key", f.key);
+    if (f.caller) q.set("caller", f.caller);
     if (f.operation) q.set("operation", f.operation);
     try { out.replaceChildren(auditTable(await api("GET", "/v1/admin/audit?" + q))); } catch (e) { fail(e); }
   };
   put(c, head("Audit log", "Every call: who made it, what it did, how many values of each type it hid. Values themselves are never recorded."),
-    el("div", { class: "card", style: "margin-bottom:16px" }, el("div", { class: "card-body row" }, el("div", { class: "grow" }, key), el("div", { class: "grow" }, op), lim,
+    el("div", { class: "card", style: "margin-bottom:16px" }, el("div", { class: "card-body row" }, el("div", { class: "grow" }, who), el("div", { class: "grow" }, op), lim,
       el("button", { class: "btn primary", type: "button", onclick: load }, "Apply"))), out);
   await load();
 }
@@ -646,7 +595,7 @@ async function pageTry(c) {
           summary.protection === "off" ? el("span", { class: "callout bad" }, "PII protection is OFF: the file was returned unchanged.") : null));
     } catch (e) { fail(e); }
   };
-  put(c, head("Try it", "Test your configuration on sample text or a file. Calls are made with your admin key and appear in the audit log."),
+  put(c, head("Try it", "Test your configuration on sample text or a file. Calls appear in the audit log."),
     el("div", { class: "grid cols-2" },
       el("div", { class: "card" }, el("div", { class: "card-head" }, el("h2", {}, "Input")),
         el("div", { class: "card-body" },
@@ -659,10 +608,9 @@ async function pageTry(c) {
       el("div", { class: "card" }, el("div", { class: "card-head" }, el("h2", {}, "Result")), el("div", { class: "card-body" }, out, meta))));
 }
 
-const PAGES = { overview: pageOverview, fields: pageFields, detection: pageDetection, keys: pageKeys, audit: pageAudit, check: pageCheck, tryit: pageTry };
+const PAGES = { overview: pageOverview, fields: pageFields, detection: pageDetection, audit: pageAudit, check: pageCheck, tryit: pageTry };
 
 // ---- start -----------------------------------------------------------------------------------------------------------------
 (async function start() {
-  if (!state.key) return renderLogin();
-  try { await api("GET", "/v1/admin/overview"); renderShell(); } catch (e) { if (e.message !== "Signed out.") renderLogin(e.message); }
+  try { await api("GET", "/v1/admin/overview"); renderShell(); } catch (e) { if (e.message !== "Signed out." && e.message) renderLogin(e.message); }
 })();

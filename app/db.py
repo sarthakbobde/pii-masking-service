@@ -1,9 +1,9 @@
-"""Tables: API keys, settings, fields, custom types and the audit log. SQLite by default, any SQLAlchemy URL works."""
+"""Tables: settings, fields, custom types and the audit log. SQLite by default, any SQLAlchemy URL works."""
 import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, create_engine, event
+from sqlalchemy import JSON, DateTime, Integer, String, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -13,22 +13,6 @@ def now() -> datetime:
 
 class Base(DeclarativeBase):
     pass
-
-
-class ApiKey(Base):
-    __tablename__ = "api_keys"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(80), unique=True)
-    prefix: Mapped[str] = mapped_column(String(16))                       # shown in listings to tell keys apart
-    key_hash: Mapped[str] = mapped_column(String(64), unique=True)        # SHA-256 of the whole key; the key is never stored
-    permissions: Mapped[list] = mapped_column(JSON)
-    scopes: Mapped[list] = mapped_column(JSON, default=lambda: ["*"])     # unused: kept so older databases still load
-    rate_limit: Mapped[int] = mapped_column(Integer)                      # requests per minute
-    active: Mapped[bool] = mapped_column(default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
-    created_by: Mapped[str] = mapped_column(String(80), default="")
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Settings(Base):
@@ -67,8 +51,7 @@ class AuditEntry(Base):
     __tablename__ = "audit_log"
     id: Mapped[int] = mapped_column(primary_key=True)
     at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
-    key_id: Mapped[int | None] = mapped_column(ForeignKey("api_keys.id"), nullable=True)
-    key_name: Mapped[str] = mapped_column(String(80), default="")
+    key_name: Mapped[str] = mapped_column(String(80), default="")                 # the caller's address, or "admin"
     operation: Mapped[str] = mapped_column(String(40))
     scope: Mapped[str] = mapped_column(String(80), default="")
     status: Mapped[int] = mapped_column(Integer)

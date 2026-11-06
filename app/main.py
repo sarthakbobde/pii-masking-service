@@ -3,11 +3,11 @@
 CMS:   POST /api/v1/documents/mask, GET .../{job_id}/status, GET .../{job_id}/download (ContractAI and CMS spec, A.8)
 Text:  POST /v1/mask
 Files: POST /v1/files/mask (same file type back; summary in X-PII-Summary)
-Admin: /v1/admin/overview, check, settings, custom-types, fields, keys, audit
+Admin: /v1/admin/overview, check, settings, custom-types, fields, audit (and the page at /admin)
 GET /healthz needs no key.
 
-Every call is checked against the caller's key (permission, rate limit) and written to the audit log with its counts by type,
-never values. Fail closed: if detection errors, the caller gets an error and no text or file. Errors under /api/v1/ use the
+The masking endpoints need no key (see app/auth.py); the admin ones need the admin key, or come from the server itself.
+Every call is written to the audit log with its counts by type, never values. Fail closed: if detection errors, the caller gets an error and no text or file. Errors under /api/v1/ use the
 specification's format: {"error": {"code", "message", "details"}}.
 """
 import base64
@@ -45,7 +45,7 @@ async def lifespan(_app: FastAPI):
     logging.getLogger("presidio-analyzer").setLevel(logging.WARNING)
     db = init_db(config.database_url)
     policy.seed(db)
-    auth.bootstrap(db)
+    auth.check_config()
     if config.warm_up:
         threading.Thread(target=detect.warm_up, name="warm-up", daemon=True).start()
     yield
@@ -82,43 +82,12 @@ class TextIn(BaseModel):
     options: Options | None = None
 
 
-class KeyIn(BaseModel):
-    name: str
-    permissions: list[str]
-    rate_limit: int | None = None
-
-
 class PatternTest(BaseModel):
     pattern: str
     text: str
 
 
-# ---- the caller ------------------------------------------------------------------------------------------------------------
-def _key_from(authorization: str | None, x_api_key: str | None) -> str:
-    if x_api_key:
-        return x_api_key.strip()
-    if authorization and authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
-    return ""
-
-
-def require(permission: str, operation: str):
-    def dep(authorization: str | None = Header(None), x_api_key: str | None = Header(None)) -> auth.Caller:
-        caller = auth.authenticate(_key_from(authorization, x_api_key))
-        if caller is None:
-            raise HTTPException(401, "A valid API key is required (Authorization: Bearer <key> or X-API-Key).",
-                                headers={"WWW-Authenticate": "Bearer"})
-        if not caller.can(permission):
-            audit.record(caller, operation, 403, detail="permission")
-            raise HTTPException(403, f"This key does not have the '{permission}' permission.")
-        wait = auth.allow(caller)
-        if wait:
-            audit.record(caller, operation, 429, detail="rate limit")
-            raise HTTPException(429, "Rate limit reached for this key.", headers={"Retry-After": str(int(wait) + 1)})
-        return caller
-    return dep
-
-
+# ---- who is calling: see app/auth.py ----------------------------------------------------------------------------------------
 def _run(caller: auth.Caller, operation: str, work, counts=lambda: {}):
     """Run one operation, audit it, and turn errors into HTTP answers (nothing partial is ever returned)."""
     started = time.monotonic()
@@ -216,7 +185,7 @@ def _cms_mask(caller: auth.Caller, upload: UploadFile | None, contract_id: str |
     try:
         p = policy.resolve(None)
         if not policy.protection_on():           # the admin switched PII protection off: the file is returned unchanged
-            return jobs.Job(jobs.new_id(), caller.id, contract_id.strip(), version.strip(), name,
+            return jobs.Job(jobs.new_id(), contract_id.strip(), version.strip(), name,
                             _output_name(name, output_filename, ext), files.MEDIA[ext], ext, data, {}, protection_off=True)
         r = Redactor(p)
         out, media, extra = files.process(name, data, r)
@@ -232,7 +201,7 @@ def _cms_mask(caller: auth.Caller, upload: UploadFile | None, contract_id: str |
         raise ApiError(500, "MASKING_FAILED", "Document could not be masked. Contact support with request timestamp.") from None
     if not original_text.strip() and not extra.get("ocr_pages"):
         raise ApiError(422, "UNREADABLE_DOCUMENT", "Document could not be read. It may be corrupt or have no extractable text.")
-    return jobs.Job(jobs.new_id(), caller.id, contract_id.strip(), version.strip(), name,
+    return jobs.Job(jobs.new_id(), contract_id.strip(), version.strip(), name,
                     _output_name(name, output_filename, ext), media, ext, out, dict(r.counts), pages=extra.get("pages"),
                     unprocessed_pages=extra.get("unprocessed_image_pages", []), ocr_pages=extra.get("ocr_pages", []))
 
@@ -240,7 +209,7 @@ def _cms_mask(caller: auth.Caller, upload: UploadFile | None, contract_id: str |
 @app.post("/api/v1/documents/mask", tags=["cms"],
           summary="Mask a document for CMS: multipart file, contract_id, version and optional output_filename")
 def cms_submit(file: UploadFile | None = File(None), contract_id: str | None = Form(None), version: str | None = Form(None),
-               output_filename: str | None = Form(None), caller: auth.Caller = Depends(require("mask", "cms_mask"))):
+               output_filename: str | None = Form(None), caller: auth.Caller = Depends(auth.client)):
     started = time.monotonic()
     status, detail, counts = 200, "", {}
     try:
@@ -258,21 +227,21 @@ def cms_submit(file: UploadFile | None = File(None), contract_id: str | None = F
         audit.record(caller, "cms_mask", status, counts, detail, int((time.monotonic() - started) * 1000))
 
 
-def _job_or_404(job_id: str, caller: auth.Caller) -> jobs.Job:
-    job = jobs.store.get(job_id, caller.id)
+def _job_or_404(job_id: str) -> jobs.Job:
+    job = jobs.store.get(job_id)
     if job is None:
         raise ApiError(404, "JOB_NOT_FOUND", f"No job found with id {job_id[:60]}")
     return job
 
 
 @app.get("/api/v1/documents/mask/{job_id}/status", tags=["cms"], summary="The masking status and summary (counts, field types)")
-def cms_status(job_id: str, caller: auth.Caller = Depends(require("mask", "cms_status"))):
-    return _job_or_404(job_id, caller).status()
+def cms_status(job_id: str):
+    return _job_or_404(job_id).status()
 
 
 @app.get("/api/v1/documents/mask/{job_id}/download", tags=["cms"], summary="The masked file, in the format that was uploaded")
-def cms_download(job_id: str, caller: auth.Caller = Depends(require("mask", "cms_download"))):
-    job = _job_or_404(job_id, caller)
+def cms_download(job_id: str, caller: auth.Caller = Depends(auth.client)):
+    job = _job_or_404(job_id)
     audit.record(caller, "cms_download", 200, detail=f"contract {job.contract_id}")
     headers = {"Content-Disposition": f'attachment; filename="{job.output_filename}"', "X-Contract-Id": job.contract_id,
                "X-Version": job.version, "X-Original-Filename": quote(job.original_filename, safe=" ._-()"),
@@ -285,7 +254,7 @@ def cms_download(job_id: str, caller: auth.Caller = Depends(require("mask", "cms
 
 # ---- text ----------------------------------------------------------------------------------------------------------------------
 @app.post("/v1/mask", tags=["text"], summary="Replace personal data with labels such as <EMAIL_ADDRESS> (one-way)")
-def mask(body: TextIn, caller: auth.Caller = Depends(require("mask", "mask"))):
+def mask(body: TextIn, caller: auth.Caller = Depends(auth.client)):
     _check_length(body.text)
     r = Redactor(_resolve(body.options))
     off = not policy.protection_on()
@@ -323,7 +292,7 @@ def _options_from_form(options: str | None) -> dict | None:
 
 @app.post("/v1/files/mask", tags=["files"], summary="Same file type back with personal data replaced by labels")
 def file_mask(file: UploadFile = File(...), options: str | None = Form(None),
-              caller: auth.Caller = Depends(require("mask", "file_mask"))):
+              caller: auth.Caller = Depends(auth.client)):
     data = _read_upload(file)
     name = file.filename or "file"
     r = Redactor(_resolve(_options_from_form(options)))
@@ -372,22 +341,21 @@ def admin_op(caller: auth.Caller, operation: str, fn):
 
 
 @app.get("/v1/admin/overview", tags=["admin"], summary="Status, protection switch, counts and the last 24 hours")
-def get_overview(caller: auth.Caller = Depends(require("admin", "admin_overview"))):
-    all_keys = auth.list_keys()
+def get_overview(caller: auth.Caller = Depends(auth.admin)):
     return {"health": json.loads(health().body), "protection_enabled": policy.protection_on(),
-            "counts": {"active_keys": sum(k["active"] for k in all_keys), "fields": len(policy.fields()),
+            "admin_access": auth.admin_mode(),
+            "counts": {"fields": len(policy.fields()),
                        "fields_enabled": sum(f["enabled"] for f in policy.fields()),
                        "field_values": sum(len(f["terms"]) for f in policy.fields()),
                        "custom_types": len(policy.custom_types())},
             "last_24h": audit.summary(24),
-            "limits": {"max_text_chars": config.max_text_chars, "max_upload_mb": config.max_upload_mb,
-                       "default_rate_limit": config.default_rate_limit}}
+            "limits": {"max_text_chars": config.max_text_chars, "max_upload_mb": config.max_upload_mb}}
 
 
 @app.post("/v1/admin/check", tags=["admin"],
           summary="Check a document: what would be hidden, a text preview of the result and the masked file")
 def check_document(file: UploadFile = File(...), options: str | None = Form(None),
-                   caller: auth.Caller = Depends(require("admin", "admin_check"))):
+                   caller: auth.Caller = Depends(auth.admin)):
     data = _read_upload(file)
     name = file.filename or "file"
     r = Redactor(_resolve(_options_from_form(options)))       # a check never stores anything, and always applies the settings
@@ -403,37 +371,37 @@ def check_document(file: UploadFile = File(...), options: str | None = Form(None
 
 
 @app.get("/v1/admin/settings", tags=["admin"])
-def get_settings(caller: auth.Caller = Depends(require("admin", "admin_settings_read"))):
+def get_settings(caller: auth.Caller = Depends(auth.admin)):
     return policy.view()
 
 
 @app.put("/v1/admin/settings", tags=["admin"], summary="Change some or all settings")
-def put_settings(body: dict[str, Any], caller: auth.Caller = Depends(require("admin", "admin_settings_update"))):
+def put_settings(body: dict[str, Any], caller: auth.Caller = Depends(auth.admin)):
     return admin_op(caller, "admin_settings_update", lambda: policy.update(body, caller.name))
 
 
 @app.get("/v1/admin/custom-types", tags=["admin"])
-def get_custom(caller: auth.Caller = Depends(require("admin", "admin_types_read"))):
+def get_custom(caller: auth.Caller = Depends(auth.admin)):
     return policy.custom_types()
 
 
 @app.post("/v1/admin/custom-types", tags=["admin"], status_code=201)
-def add_custom(body: dict[str, Any], caller: auth.Caller = Depends(require("admin", "admin_types_create"))):
+def add_custom(body: dict[str, Any], caller: auth.Caller = Depends(auth.admin)):
     return admin_op(caller, "admin_types_create", lambda: policy.save_custom(body, caller.name))
 
 
 @app.put("/v1/admin/custom-types/{type_id}", tags=["admin"])
-def change_custom(type_id: int, body: dict[str, Any], caller: auth.Caller = Depends(require("admin", "admin_types_update"))):
+def change_custom(type_id: int, body: dict[str, Any], caller: auth.Caller = Depends(auth.admin)):
     return admin_op(caller, "admin_types_update", lambda: policy.save_custom(body, caller.name, type_id))
 
 
 @app.delete("/v1/admin/custom-types/{type_id}", tags=["admin"])
-def remove_custom(type_id: int, caller: auth.Caller = Depends(require("admin", "admin_types_delete"))):
+def remove_custom(type_id: int, caller: auth.Caller = Depends(auth.admin)):
     return admin_op(caller, "admin_types_delete", lambda: policy.delete_custom(type_id, caller.name))
 
 
 @app.post("/v1/admin/custom-types/test", tags=["admin"], summary="What a pattern would match in a sample (max 20)")
-def test_pattern(body: PatternTest, caller: auth.Caller = Depends(require("admin", "admin_types_test"))):
+def test_pattern(body: PatternTest, caller: auth.Caller = Depends(auth.admin)):
     def fn():
         policy.check_custom({"name": "TRY_IT", "pattern": body.pattern})
         return {"matches": [m.group(0) for m in re.finditer(body.pattern, body.text[:10_000])][:20]}
@@ -441,59 +409,36 @@ def test_pattern(body: PatternTest, caller: auth.Caller = Depends(require("admin
 
 
 @app.get("/v1/admin/fields", tags=["admin"], summary="The dictionary: every field with its values and labels")
-def get_fields(caller: auth.Caller = Depends(require("admin", "admin_fields_read"))):
+def get_fields(caller: auth.Caller = Depends(auth.admin)):
     return policy.fields()
 
 
 @app.post("/v1/admin/fields", tags=["admin"], status_code=201,
           summary="Add a field: {name, description, terms, labels, enabled}")
-def add_field(body: dict[str, Any], caller: auth.Caller = Depends(require("admin", "admin_fields_create"))):
+def add_field(body: dict[str, Any], caller: auth.Caller = Depends(auth.admin)):
     return admin_op(caller, "admin_fields_create", lambda: policy.save_field(body, caller.name))
 
 
 @app.patch("/v1/admin/fields/{field_id}", tags=["admin"], summary="Change a field; terms or labels given replace the old ones")
-def change_field(field_id: int, body: dict[str, Any], caller: auth.Caller = Depends(require("admin", "admin_fields_update"))):
+def change_field(field_id: int, body: dict[str, Any], caller: auth.Caller = Depends(auth.admin)):
     return admin_op(caller, "admin_fields_update", lambda: policy.save_field(body, caller.name, field_id))
 
 
 @app.post("/v1/admin/fields/{field_id}/terms", tags=["admin"], summary="Add values to a field's dictionary or take some out")
 def change_field_terms(field_id: int, body: TermsChange,
-                       caller: auth.Caller = Depends(require("admin", "admin_fields_terms"))):
+                       caller: auth.Caller = Depends(auth.admin)):
     return admin_op(caller, "admin_fields_terms", lambda: policy.change_terms(field_id, body.add, body.remove, caller.name))
 
 
 @app.delete("/v1/admin/fields/{field_id}", tags=["admin"])
-def remove_field(field_id: int, caller: auth.Caller = Depends(require("admin", "admin_fields_delete"))):
+def remove_field(field_id: int, caller: auth.Caller = Depends(auth.admin)):
     return admin_op(caller, "admin_fields_delete", lambda: policy.delete_field(field_id))
 
 
-@app.get("/v1/admin/keys", tags=["admin"])
-def get_keys(caller: auth.Caller = Depends(require("admin", "admin_keys_read"))):
-    return auth.list_keys()
-
-
-@app.post("/v1/admin/keys", tags=["admin"], status_code=201, summary="Create a key; the key is in the answer, only this once")
-def add_key(body: KeyIn, caller: auth.Caller = Depends(require("admin", "admin_keys_create"))):
-    def fn():
-        info, key = auth.create(body.name, body.permissions, body.rate_limit, caller.name)
-        return {**info, "key": key}
-    return admin_op(caller, "admin_keys_create", fn)
-
-
-@app.patch("/v1/admin/keys/{key_id}", tags=["admin"], summary="Change a key's permissions or rate limit")
-def change_key(key_id: int, body: dict[str, Any], caller: auth.Caller = Depends(require("admin", "admin_keys_update"))):
-    return admin_op(caller, "admin_keys_update", lambda: auth.update(key_id, body))
-
-
-@app.delete("/v1/admin/keys/{key_id}", tags=["admin"], summary="Revoke a key")
-def remove_key(key_id: int, caller: auth.Caller = Depends(require("admin", "admin_keys_revoke"))):
-    return admin_op(caller, "admin_keys_revoke", lambda: auth.revoke(key_id))
-
-
 @app.get("/v1/admin/audit", tags=["admin"])
-def get_audit(key: str | None = None, operation: str | None = None, since: datetime | None = None,
-              limit: int = Query(100, ge=1, le=1000), caller: auth.Caller = Depends(require("admin", "admin_audit_read"))):
-    return audit.entries(key, operation, since, limit)
+def get_audit(caller_filter: str | None = Query(None, alias="caller"), operation: str | None = None, since: datetime | None = None,
+              limit: int = Query(100, ge=1, le=1000), caller: auth.Caller = Depends(auth.admin)):
+    return audit.entries(caller_filter, operation, since, limit)
 
 
 # ---- health -------------------------------------------------------------------------------------------------------------------

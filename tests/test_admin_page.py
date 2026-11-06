@@ -29,8 +29,8 @@ def test_the_page_makes_no_unauthenticated_calls_to_admin_data(client):
     assert client.post("/v1/admin/check", files={"file": ("a.txt", b"hi")}).status_code == 401
 
 
-def test_protection_switch_passes_text_and_files_through(client, make_key):
-    h = make_key(["mask"])
+def test_protection_switch_passes_text_and_files_through(client):
+    h = {}
     text = f"Mail {EMAIL}"
     assert client.get("/healthz").json()["protection"] is True
     try:
@@ -50,18 +50,18 @@ def test_protection_switch_must_be_a_boolean(client):
     assert client.put("/v1/admin/settings", headers=ADMIN, json={"protection_enabled": "no"}).status_code == 400
 
 
-def test_overview(client, make_key):
-    client.post("/v1/mask", headers=make_key(["mask"]), json={"text": f"Mail {EMAIL}"})
+def test_overview(client):
+    client.post("/v1/mask", headers={}, json={"text": f"Mail {EMAIL}"})
     o = client.get("/v1/admin/overview", headers=ADMIN).json()
     assert o["protection_enabled"] is True and o["health"]["database"] is True
-    assert o["counts"]["fields"] == 12 and o["counts"]["active_keys"] >= 2
+    assert o["counts"]["fields"] == 12 and o["admin_access"] == "key"
     assert o["last_24h"]["calls"] >= 1 and o["last_24h"]["values"] >= 1 and "EMAIL_ADDRESS" in o["last_24h"]["by_type"]
     assert "limits" in o
 
 
-def test_scrub_metadata_can_be_switched_off(client, make_key):
+def test_scrub_metadata_can_be_switched_off(client):
     import docx
-    h = make_key(["mask"])
+    h = {}
     d = docx.Document()
     d.add_paragraph("Hello")
     d.core_properties.author = "Priya Nair"
@@ -102,8 +102,3 @@ def test_check_with_extra_options_and_errors(client):
     assert client.post("/v1/admin/check", headers=ADMIN, files={"file": ("a.exe", b"MZ")}).status_code == 415
     assert client.post("/v1/admin/check", headers=ADMIN, files={"file": ("a.txt", b"")}).status_code == 400
     assert client.post("/v1/admin/check", headers=ADMIN, files={"file": ("a.txt", b"x")}, data={"options": "[1]"}).status_code == 400
-
-
-def test_check_needs_admin(client, make_key):
-    h = make_key(["mask"])
-    assert client.post("/v1/admin/check", headers=h, files={"file": ("a.txt", b"x")}).status_code == 403

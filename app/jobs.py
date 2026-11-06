@@ -1,8 +1,8 @@
 """Masking jobs for the CMS API (A.8): the masked file waits here until CMS has downloaded it.
 
 Only the masked result is kept, never the original file. Jobs live in this process's memory and are dropped after
-`PII_JOB_TTL_MINUTES`, or earlier when the total size passes `PII_JOB_MAX_MB` (oldest first). A job can be read only by the
-API key that made it. With several workers or replicas, route status and download calls to the worker that took the upload
+`PII_JOB_TTL_MINUTES`, or earlier when the total size passes `PII_JOB_MAX_MB` (oldest first). A job id is random (96 bits), so it cannot be
+guessed. With several workers or replicas, route status and download calls to the worker that took the upload
 (or put the service behind session affinity); a restart drops every job, and CMS then submits the file again.
 """
 import secrets
@@ -21,7 +21,6 @@ def _now() -> str:
 @dataclass
 class Job:
     id: str
-    key_id: int
     contract_id: str
     version: str
     original_filename: str
@@ -73,11 +72,11 @@ class JobStore:
                 del self._jobs[next(iter(self._jobs))]                    # oldest first, never the one just added
         return job
 
-    def get(self, job_id: str, key_id: int) -> Job | None:
+    def get(self, job_id: str) -> Job | None:
         with self._lock:
             self._drop_expired()
             job = self._jobs.get(job_id)
-        return job if job is not None and job.key_id == key_id else None
+        return job
 
     def _drop_expired(self) -> None:
         now = time.monotonic()
@@ -90,7 +89,7 @@ class JobStore:
 
 
 def new_id() -> str:
-    return "mask-" + secrets.token_hex(6)
+    return "mask-" + secrets.token_hex(12)
 
 
 store = JobStore()

@@ -19,7 +19,7 @@ Detection uses Microsoft Presidio with spaCy (`en_core_web_sm`). It covers:
 ## Contents
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
-- [API keys](#api-keys)
+- [Who can call what](#who-can-call-what)
 - [CMS API: mask a document](#cms-api-mask-a-document)
 - [Text and file masking](#text-and-file-masking)
 - [The admin page](#the-admin-page)
@@ -42,11 +42,8 @@ python -m venv .venv
 pip install -r requirements-dev.txt
 ```
 
-Create a `.env` (see `.env.example`):
-
-```
-PII_BOOTSTRAP_ADMIN_KEY=<any random string of 24+ characters>
-```
+No configuration is needed to start. To reach the admin page from another computer, create a `.env` (see `.env.example`)
+with an admin key: `PII_ADMIN_KEY=<a random string of 24+ characters>`.
 
 Run it:
 
@@ -60,7 +57,7 @@ Interactive API docs are at http://localhost:8000/docs and the admin page is at 
 With Docker:
 
 ```bash
-cp .env.example .env              # set PII_BOOTSTRAP_ADMIN_KEY
+cp .env.example .env              # optional: set PII_ADMIN_KEY
 docker compose up -d --build
 ```
 
@@ -73,38 +70,32 @@ Environment variables (or `.env`):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PII_BOOTSTRAP_ADMIN_KEY` | (none) | Created as an admin key on start if no key with this value exists. Remove it once you have created your own keys. |
+| `PII_ADMIN_KEY` | (none) | Protects the admin page and API (at least 24 characters). Without it they answer only from the server itself. The masking API never needs a key. |
 | `PII_DATABASE_URL` | `sqlite:///./data/pii.db` | Any SQLAlchemy URL. For PostgreSQL, install a driver (`psycopg`) and use `postgresql+psycopg://...`. |
 | `PII_SETTINGS_FILE` | (none) | JSON that seeds the settings and fields on **first** start; see `settings.example.json`. |
 | `PII_MAX_UPLOAD_MB` | `50` | Largest document accepted (the specification's limit is 50 MB). |
 | `PII_MAX_TEXT_CHARS` | `200000` | Longest text accepted by `/v1/mask`. |
 | `PII_JOB_TTL_MINUTES` | `60` | How long a masked CMS document waits to be downloaded. |
 | `PII_JOB_MAX_MB` | `500` | Total size of masked documents held at once; the oldest go first. |
-| `PII_DEFAULT_RATE_LIMIT` | `120` | Requests per minute for keys created without their own limit. |
 | `PII_WARM_UP` | `true` | Load the detector at start-up rather than on the first request. |
 | `PII_TESSDATA_DIR` | (auto) | Tesseract language data for OCR of scanned PDFs. |
 | `PII_LOG_LEVEL` | `INFO` | |
 
-## API keys
+## Who can call what
 
-Every endpoint except `/healthz` and the admin page itself needs a key, sent as `Authorization: Bearer <key>` or
-`X-API-Key: <key>`.
+**The masking API needs no key.** The CMS specification (A.8) lists no authentication, so `POST /api/v1/documents/mask`,
+its status and download, `POST /v1/mask` and `POST /v1/files/mask` answer anyone who can reach the service. That makes
+network placement the protection: run it where only CMS can reach it (a private network, or behind your API gateway or
+reverse proxy, which can add authentication and rate limiting if you want them).
 
-- Keys are stored as SHA-256 hashes. The key is shown **once**, in the response that creates it.
-- **Permissions**: `mask` (use the masking API) and `admin` (manage settings, fields, keys and the audit log).
-- **Rate limit**: requests per minute per key (sliding window, in memory per process). Over the limit you get `429` with
-  `Retry-After`.
-- Every call is written to the audit log: time, key, operation, HTTP status, counts by type, and for the CMS API the
-  contract id. Values are never logged.
+**The admin page and admin API are protected**, because they change what is hidden and can switch masking off:
+- With `PII_ADMIN_KEY` set, send it as `Authorization: Bearer <key>` or `X-API-Key: <key>`. The admin page asks for it.
+- Without it, they answer only requests that come from the server itself (loopback). A request that carries proxy headers
+  (`X-Forwarded-For`, `Forwarded`, ...) is not treated as local, so a reverse proxy on the same machine does not open the
+  admin page to the world. Elsewhere you get `403` with instructions.
 
-```bash
-python -m app.cli create-key cms-integration --permissions mask --rate-limit 300
-python -m app.cli list-keys
-python -m app.cli revoke-key 3
-```
-
-The specification lists no authentication for A.8 (it shows a JWT only for the combine API in A.7), so this service uses
-API keys. If CMS must send a JWT instead, that is a small change to the `require` dependency in `app/main.py`.
+Every call is written to the audit log: time, caller address (or `admin`), operation, HTTP status, counts by type, and for the
+CMS API the contract id. Values are never logged.
 
 ## CMS API: mask a document
 
@@ -125,7 +116,7 @@ or expires.
 | `output_filename` | No | Name of the masked file. Defaults to `<original_filename>_Masked.<ext>` |
 
 ```bash
-curl -s localhost:8000/api/v1/documents/mask -H "Authorization: Bearer $KEY" \
+curl -s localhost:8000/api/v1/documents/mask \
   -F file=@ACME_MSA_2026.docx -F contract_id=CMS-CONTRACT-12345 -F version=2.0 -F output_filename=ACME_MSA_20.docx
 ```
 
@@ -159,7 +150,7 @@ The masked file as binary content, in the format that was uploaded.
 | `X-Original-Filename` | `ACME_MSA_2026.docx` (percent-encoded if it has non-ASCII characters) |
 | `X-Masked-Fields-Count` | `12` |
 
-A job can be read only by the key that made it, and can be downloaded any number of times until it expires.
+A job can be downloaded any number of times until it expires. The job id is random (96 bits), so it cannot be guessed.
 
 ### Errors
 
@@ -179,8 +170,8 @@ Under `/api/v1/` every error has the specification's format:
 | 500 | `MASKING_FAILED` | Masking could not be completed. **No file is returned** |
 | 500 | `INTERNAL_ERROR` | Unexpected failure |
 | 503 | `SERVICE_UNAVAILABLE` | The detector is not available |
-| 404 | `JOB_NOT_FOUND` | No such job, it belongs to another key, or it has expired |
-| 401, 403, 429 | `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED` | Key missing or unknown, key lacks the `mask` permission, rate limit reached (with `Retry-After`) |
+| 404 | `JOB_NOT_FOUND` | No such job, or it has expired |
+| 404, 405 | `NOT_FOUND`, `METHOD_NOT_ALLOWED` | A path or method that does not exist under `/api/v1/` |
 
 Not in the specification, and worth knowing:
 - **Fails closed.** If detection breaks, CMS gets `MASKING_FAILED` and no file, never a partly masked one.
@@ -195,10 +186,10 @@ Not in the specification, and worth knowing:
 
 ## Text and file masking
 
-### `POST /v1/mask` (permission `mask`)
+### `POST /v1/mask`
 
 ```bash
-curl -s localhost:8000/v1/mask -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+curl -s localhost:8000/v1/mask -H "Content-Type: application/json" \
   -d '{"text": "Mail john.doe@acme.com or call +91 98765 43210. Salary: 12,40,000."}'
 ```
 
@@ -218,13 +209,13 @@ curl -s localhost:8000/v1/mask -H "Authorization: Bearer $KEY" -H "Content-Type:
 `start` and `end` are offsets in the **input** text. Responses never echo the values. An optional `options` object overrides
 [settings](#settings-and-per-request-options) for the one request.
 
-### `POST /v1/files/mask` (permission `mask`)
+### `POST /v1/files/mask`
 
 Multipart `file` (and optional `options` as a JSON string). The response is the masked file, of the same type (PDF, DOCX,
 PPTX, XLSX, CSV, TXT, Markdown), named `<name>.masked.<ext>`. What was found is in the `X-PII-Summary` header.
 
 ```bash
-curl -s localhost:8000/v1/files/mask -H "Authorization: Bearer $KEY" -F file=@report.pdf -D headers.txt -o report.masked.pdf
+curl -s localhost:8000/v1/files/mask -F file=@report.pdf -D headers.txt -o report.masked.pdf
 ```
 
 ### `GET /healthz` (no key)
@@ -237,7 +228,8 @@ curl -s localhost:8000/v1/files/mask -H "Authorization: Bearer $KEY" -F file=@re
 
 ## The admin page
 
-Open **`/admin`** and sign in with a key that has the `admin` permission. The key stays in the browser tab only. It is plain
+Open **`/admin`**. On the server itself it opens straight away; from elsewhere it asks for the admin key (`PII_ADMIN_KEY`), which
+stays in the browser tab only. It is plain
 HTML, CSS and JavaScript served by the service, with a strict content security policy.
 
 | Screen | What an admin can do |
@@ -245,8 +237,7 @@ HTML, CSS and JavaScript served by the service, with a strict content security p
 | **Overview** | See the **PII protection switch**, requests and values hidden in the last 24 hours, the most hidden types, system health and recent activity. |
 | **Fields to hide** | Add, edit, pause and delete [fields](#fields-the-dictionary-of-values-to-hide): the labels that introduce a value and the known values to hide. |
 | **Detection settings** | Switch each kind of data on or off, add your own regex types (with a pattern tester), set the confidence threshold, names, sensitive keywords, the allow-list, document-property removal, OCR, and whether callers may override settings. |
-| **API keys** | Create keys (shown once), change permissions and rate limits, and revoke. |
-| **Audit log** | Filter by caller or operation. Counts only, never values. |
+| **Audit log** | Filter by caller address or operation. Counts only, never values. |
 | **Check a document** | Add a file and see what would be hidden: counts by kind, a preview of the masked text, and a download of the masked file. Nothing is stored. |
 | **Try it** | Run sample text or a file through masking with optional per-request options. |
 
@@ -256,7 +247,7 @@ HTML, CSS and JavaScript served by the service, with a strict content security p
 
 ## Admin API
 
-All need the `admin` permission.
+All need the admin key (or must come from the server itself): see [Who can call what](#who-can-call-what).
 
 | Method and path | Purpose |
 |---|---|
@@ -270,9 +261,7 @@ All need the `admin` permission.
 | `PATCH /v1/admin/fields/{id}` | Change a field. `terms` or `labels` given replace the old lists; `{"enabled": false}` pauses it. |
 | `POST /v1/admin/fields/{id}/terms` | `{"add": [...], "remove": [...]}` adds values to a field or takes some out. |
 | `DELETE /v1/admin/fields/{id}` | Delete a field. |
-| `GET /v1/admin/keys`, `POST` the same path | List keys (never the key itself) or create one: `{"name", "permissions", "rate_limit"}`. |
-| `PATCH /v1/admin/keys/{id}`, `DELETE` the same path | Change a key's permissions or rate limit, or revoke it. |
-| `GET /v1/admin/audit?key=&operation=&since=&limit=` | Recent audit entries, newest first. |
+| `GET /v1/admin/audit?caller=&operation=&since=&limit=` | Recent audit entries, newest first. |
 
 ## Fields: the dictionary of values to hide
 
@@ -366,10 +355,10 @@ The CMS endpoint accepts `.docx` and `.pdf` only, as in the specification.
   match, is silenced.
 - The only thing kept is the **masked** output of a CMS job, in memory, for `PII_JOB_TTL_MINUTES`.
 - Run behind TLS (a reverse proxy or load balancer). The service itself speaks plain HTTP.
-- Rate limits, the key cache and CMS jobs are per process. With several workers or replicas, each enforces its own limit and
-  holds its own jobs (see the CMS notes above).
+- There are no per-caller rate limits. Add them in your gateway or reverse proxy if you need them. CMS jobs are per process:
+  with several workers or replicas, each holds its own jobs (see the CMS notes above).
 - File uploads are size-limited, checked against their claimed type, and refused if they are zip bombs.
-- An older database that has a `vault` table or key scopes still loads: those columns and tables are simply unused.
+- An older database that has `vault` or `api_keys` tables still loads: those tables are simply unused.
 
 ## Tests
 
@@ -377,7 +366,7 @@ The CMS endpoint accepts `.docx` and `.pdf` only, as in the specification.
 python -m pytest -q
 ```
 
-The suite covers authentication, permissions and rate limits; masking of text and every file type; the CMS API (success,
-headers, every error code, job ownership and expiry, the audit log); the admin API and page; fields; and that no
+The suite covers the admin guard (key, local-only and proxy headers); masking of text and every file type with no key; the CMS API
+(success, headers, every error code, job expiry, the audit log); the admin API and page; fields; and that no
 unmask, token or vault endpoint exists. The PDF tests check that the value is gone from the file bytes. The OCR test runs when
 Tesseract language data is available, for example in `docker build --target test .`, and is skipped otherwise.

@@ -3,8 +3,9 @@
     python demo/run_demo.py                      # http://127.0.0.1:8010, press Enter between steps
     python demo/run_demo.py --url http://127.0.0.1:8000 --auto
 
-Uses the admin key from .env (PII_BOOTSTRAP_ADMIN_KEY) to create a demo key, then shows masking, permissions, the CMS
-document API (submit, status, download), files, fields and a custom type added live, and the audit log. Masked files go to demo/output/.
+The masking API needs no key. The admin calls (fields, settings, audit) work without one when this script runs on the
+server itself; if PII_ADMIN_KEY is set in .env it is sent. Shows masking, the CMS document API (submit, status, download),
+files, fields and a custom type added live, and the audit log. Masked files go to demo/output/.
 """
 import argparse
 import json
@@ -46,8 +47,10 @@ class Demo:
         self.http = httpx.Client(base_url=url, timeout=120)
         self.auto = auto
         self.step_no = 0
-        env = dict(line.split("=", 1) for line in (ROOT / ".env").read_text().splitlines() if "=" in line and not line.startswith("#"))
-        self.admin = {"X-API-Key": env["PII_BOOTSTRAP_ADMIN_KEY"].strip()}
+        env = dict(line.split("=", 1) for line in (ROOT / ".env").read_text().splitlines()
+                   if "=" in line and not line.startswith("#")) if (ROOT / ".env").exists() else {}
+        key = env.get("PII_ADMIN_KEY", "").strip()
+        self.admin = {"X-API-Key": key} if key else {}
 
     def step(self, title: str, say: str = "") -> None:
         self.step_no += 1
@@ -65,15 +68,6 @@ class Demo:
         print(f"  HTTP {r.status_code}")
         print("  " + json.dumps(body, indent=2, default=str).replace("\n", "\n  "))
         return body
-
-    def key(self, name: str, permissions: list) -> dict:
-        r = self.http.post("/v1/admin/keys", headers=self.admin,
-                           json={"name": f"{name}-{int(time.time())}", "permissions": permissions})
-        r.raise_for_status()
-        info = r.json()
-        print(f"  created key '{info['name']}'  permissions={info['permissions']}  "
-              f"(key starts {info['key'][:12]}..., shown once, stored only as a hash)")
-        return {"X-API-Key": info["key"]}
 
     def file(self, headers, mode: str, name: str, options: dict | None = None) -> dict:
         r = self.http.post(f"/v1/files/{mode}", headers=headers, files={"file": (name, (HERE / "files" / name).read_bytes())},
@@ -93,21 +87,17 @@ class Demo:
         self.step("Health check", "no key needed; shows the detector, database and vault are ready")
         self.show(self.http.get("/healthz"))
 
-        self.step("Create an API key", "one key per calling system; this one may only use the masking API")
-        app = self.key("cms-app", ["mask"])
-        nobody = self.key("read-only-admin", ["admin"])
+        app = {}                       # the masking API needs no key
 
         self.step("Mask text (one-way)", "labels replace the values; findings give type and position, never the value")
         print(f"  input: {TEXT}")
         self.show(self.http.post("/v1/mask", headers=app, json={"text": TEXT}), ["text", "counts", "total"])
 
-        self.step("Permissions", "a key can only do what it was given; there is no way to restore a masked value")
-        r = self.http.post("/v1/mask", headers=nobody, json={"text": TEXT})
-        print(f"  a key without the mask permission -> HTTP {r.status_code}: {r.json()['detail']}")
-        r = self.http.post("/v1/mask", json={"text": TEXT})
-        print(f"  no key at all                     -> HTTP {r.status_code}: {r.json()['detail']}")
-        r = self.http.post("/v1/unmask", headers=app, json={"text": TEXT})
-        print(f"  asking to unmask                  -> HTTP {r.status_code} (the endpoint does not exist)")
+        self.step("No key, and no way back", "the masking API is open to CMS; nothing can restore a masked value")
+        r = self.http.post("/v1/mask", json={"text": "Mail rohan.sharma@gmail.com"})
+        print(f"  masking without any key   -> HTTP {r.status_code}: {r.json()['text']}")
+        r = self.http.post("/v1/unmask", json={"text": "Mail <EMAIL_ADDRESS>"})
+        print(f"  asking to unmask          -> HTTP {r.status_code} (the endpoint does not exist)")
 
         self.step("CMS: mask a contract (specification A.8)",
                   "CMS sends the file with its contract id and version; ContractAI returns the masked file")
@@ -169,7 +159,7 @@ class Demo:
 
         self.step("Audit log", "every call: who, what, status, counts by type; never a value")
         for e in self.http.get("/v1/admin/audit", headers=self.admin, params={"limit": 8}).json():
-            print(f"  {e['at'][11:19]}  {e['key']:<28} {e['operation']:<22} {e['status']}  {e['counts']}")
+            print(f"  {e['at'][11:19]}  {e['caller']:<18} {e['operation']:<22} {e['status']}  {e['counts']}")
 
         print("\nDone. Open the files in demo/output/ next to the originals in demo/files/.")
 
